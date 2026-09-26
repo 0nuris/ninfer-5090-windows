@@ -15,4 +15,13 @@ extern const Nvfp4LinearShape kNvfp4N16384K5120;
 extern const Nvfp4LinearShape kNvfp4N34816K5120;
 extern const Nvfp4LinearShape kNvfp4N5120K6144;
 extern const Nvfp4LinearShape kNvfp4N5120K17408;
+// DFlash2 drafter module shapes (weight-only A16 routes). Port-only: upstream registers five dense
+// NVFP4 geometries and no drafter shapes, and these serve the NVFP4 draft module our v3 artifacts
+// carry -- confirmed against the artifact's conversion report, which registers
+// dflash2/layers/0/attention/{query,key,value} with NVFP4 among the emitted formats.
+extern const Nvfp4LinearShape kNvfp4DFlash2Feature;
+extern const Nvfp4LinearShape kNvfp4DFlash2Qkv;
+extern const Nvfp4LinearShape kNvfp4DFlash2AttnOut;
+extern const Nvfp4LinearShape kNvfp4DFlash2ConvProj;
+extern const Nvfp4LinearShape kNvfp4DFlash2Selector;
 } // namespace ninfer::ops::detail

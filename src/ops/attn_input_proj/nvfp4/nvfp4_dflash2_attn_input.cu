@@ -1,11 +1,20 @@
+// NVFP4-encoded DFlash2 drafter attention projection: the fused [6144,5120] parent writes q
+// [4096,T], k [1024,T] and v [1024,T] directly. Port-only route -- upstream's three-output
+// drafter projection is Q8 only (see include/ninfer/ops/attn_input_proj.h), and upstream's NVFP4
+// registry carries no drafter geometry, so neither serves an NVFP4-encoded drafter such as the
+// one this port's QUASAR artifacts contain.
+//
+// The kernels, segmented output and epilogue are upstream's. This file selects among them per
+// token count: a GEMV at one token, an exact-token SIMT family from 2 to 32, and a 32-token chunk
+// walk above that.
+
 #include "ops/attn_input_proj/nvfp4/nvfp4_attn_input_plan.h"
 
-#include "core/device.h"
 #include "ops/common/token_slices.h"
+#include "ops/linear/common/epilogue.cuh"
+#include "ops/linear/common/output.cuh"
 #include "ops/linear/nvfp4/nvfp4_dflash2_geometry.h"
-#include "ops/linear/nvfp4/nvfp4_gemv.cuh"
-#include "ops/linear/nvfp4/nvfp4_output.cuh"
-#include "ops/linear/nvfp4/nvfp4_simt.cuh"
+#include "ops/linear/nvfp4/nvfp4_launch.cuh"
 
 #include <algorithm>
 #include <array>
@@ -17,11 +26,12 @@ namespace ninfer::ops::detail {
 namespace {
 
 using Geometry = Nvfp4DFlash2QkvGeometry;
-using Output   = Nvfp4SplitOutput3<4096, 1024>;
+using Output   = LinearBf16SegmentedOutput<4096, 1024, 1024>;
 using Launch   = void (*)(const Tensor&, const Weight&, Tensor&, Tensor&, Tensor&, cudaStream_t);
 
-// The split-output epilogue owns the family's measured low-T warp mapping; see the four-output
-// route above for the crossover rationale.
+// Measured low-T warp mapping for the drafter's exact-token family. Upstream's
+// Nvfp4A16SimtSchedule takes these as parameters, so the schedule itself is upstream's; only the
+// per-token-count choice is this port's measurement.
 template <int ActiveTokens>
 struct Nvfp4DFlash2AttentionSmallTProductionSchedule {
     static_assert(ActiveTokens >= kNvfp4FirstSmallT);
@@ -32,46 +42,30 @@ struct Nvfp4DFlash2AttentionSmallTProductionSchedule {
                                                   ? Nvfp4SimtActivationAccess::SharedPhase
                                                   : Nvfp4SimtActivationAccess::TokenPacked;
     using Type =
-        Nvfp4SimtSchedule<kWarpsPerCta, 1, 2, kValuesPerLane, ActiveTokens, 1, kActivationAccess,
-                          Nvfp4ScaleAccess::Direct, Nvfp4CodeCache::Default, 1,
-                          Nvfp4SimtBlockOrder::RowsContiguous, 1>;
+        Nvfp4A16SimtSchedule<kWarpsPerCta, 1, 2, kValuesPerLane, ActiveTokens, 1, kActivationAccess,
+                             Nvfp4ScaleAccess::Direct, Nvfp4CodeCache::Default, 1,
+                             Nvfp4SimtBlockOrder::RowsContiguous, 1>;
 };
 
 void launch_decode(const Tensor& x, const Weight& weight, Tensor& q, Tensor& k, Tensor& v,
                    cudaStream_t stream) {
     using Schedule =
-        Nvfp4GemvSchedule<8, 2, 16, 4, Nvfp4ScaleAccess::StagedRaw, Nvfp4CodeCache::Default, 2>;
-
+        Nvfp4A16GemvSchedule<8, 2, 16, 4, Nvfp4ScaleAccess::StagedRaw, Nvfp4CodeCache::Default, 2>;
     const Output output{static_cast<__nv_bfloat16*>(q.data), static_cast<__nv_bfloat16*>(k.data),
                         static_cast<__nv_bfloat16*>(v.data)};
-    constexpr int kBlocks              = Geometry::kOutputRows / Schedule::kRowsPerCta;
-    const float inverse_weight_divisor = 1.0F / weight.weight_scale_divisor;
-    nvfp4_gemv_kernel<Geometry, Schedule, Nvfp4IdentityEpilogue, Output>
-        <<<dim3(kBlocks), dim3(Schedule::kThreads), 0, stream>>>(
-            static_cast<const __nv_bfloat16*>(x.data),
-            static_cast<const std::uint8_t*>(weight.qdata),
-            static_cast<const std::uint8_t*>(weight.scales), inverse_weight_divisor,
-            Nvfp4IdentityEpilogue{}, output);
-    CUDA_CHECK(cudaGetLastError());
+    launch_nvfp4_a16_gemv<Nvfp4ScheduleInstance<Schedule, Geometry::kInputRows>>(
+        nvfp4_a16_operands(x, weight), output, LinearIdentityEpilogue{}, stream);
 }
 
 template <int ActiveTokens>
 void launch_exact(const Tensor& x, const Weight& weight, Tensor& q, Tensor& k, Tensor& v,
                   cudaStream_t stream) {
-    using Schedule            = typename Nvfp4DFlash2AttentionSmallTProductionSchedule<ActiveTokens>::Type;
-    constexpr int kTokenTiles = (ActiveTokens + Schedule::kTokenTile - 1) / Schedule::kTokenTile;
-    constexpr int kBlocks     = (Geometry::kOutputRows / Schedule::kRowsPerCta) * kTokenTiles;
-
+    using Schedule = typename Nvfp4DFlash2AttentionSmallTProductionSchedule<ActiveTokens>::Type;
     const Output output{static_cast<__nv_bfloat16*>(q.data), static_cast<__nv_bfloat16*>(k.data),
                         static_cast<__nv_bfloat16*>(v.data)};
-    const float inverse_weight_divisor = 1.0F / weight.weight_scale_divisor;
-    nvfp4_simt_kernel<Geometry, ActiveTokens, Schedule, Nvfp4IdentityEpilogue, Output>
-        <<<dim3(kBlocks), dim3(Schedule::kThreads), 0, stream>>>(
-            static_cast<const __nv_bfloat16*>(x.data),
-            static_cast<const std::uint8_t*>(weight.qdata),
-            static_cast<const std::uint8_t*>(weight.scales), inverse_weight_divisor,
-            Nvfp4IdentityEpilogue{}, output);
-    CUDA_CHECK(cudaGetLastError());
+    launch_nvfp4_a16_simt<
+        Nvfp4ScheduleInstance<Schedule, Geometry::kInputRows, ActiveTokens, true>>(
+        nvfp4_a16_operands(x, weight), output, LinearIdentityEpilogue{}, stream);
 }
 
 template <std::size_t... Offsets>
