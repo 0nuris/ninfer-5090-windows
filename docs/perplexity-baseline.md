@@ -6,6 +6,24 @@ eval/corpora/perplexity-1m/manifest.json --kv-dtype <dtype>`. That is upstream's
 carries the date it was taken; all of them are this machine, which is a different box and clock from
 any published figure. Removing `--quick` gives the full corpus.
 
+**What this measurement cannot see.** `ninfer-perplexity` has no `--spec` or draft option at all --
+`apps/perplexity/main.cpp` contains no reference to either -- so it scores the target model only.
+These figures are therefore evidence about the *text* model's arithmetic, and say nothing about a
+drafter: not the DFlash2 projection kernels, and not the drafter's own MLP path. Two of this
+project's routes are drafter-only and invisible here, which is why a green perplexity result is
+not by itself evidence that drafter work is correct. For that, the drafter's routes are covered by
+`ninfer_dflash2_nvfp4_routes_test` (oracle over the NVFP4 routes) and
+`ninfer_qwen3_5_dflash2_real_test` (real artifact, end to end, at `K=15 B=8` so the drafter's SwiGLU
+is driven at `T=128`).
+
+**Reading the 2026-09-26 pair against the band.** The acceptance criterion recorded before the
+upstream `e31bc99b` merge was ±1% around the 2026-09-24 figures. The full corpus lands at -0.098%,
+comfortably inside. The `--quick` corpus lands at -0.888%, inside but 0.11% above the lower edge,
+so it should be treated as marginal rather than as a clean pass. Note the quick corpus is a quarter
+the size of the full one and its own recorded history already spans 1.05% (4.89741 on 2026-09-22
+against 4.94879 on 2026-09-24), which is the same order as the band being tested; a band that tight
+cannot separate a real regression from the measurement's own spread.
+
 | artifact | KV | PPL | notes |
 |---|---|---|---|
 | `qwen3_8_27b_nvfp4.v3.ninfer` (official stock) | fp8 | **4.90295** | full corpus, 4.21k tok/s, recorded 2026-09-22 |
@@ -14,6 +32,8 @@ any published figure. Removing `--quick` gives the full corpus.
 | `qwen3_8_27b_nvfp4qat.v3.ninfer` (QUASAR QAT, as published) | fp8 | **4.89741** | `--quick`, recorded 2026-09-22 |
 | `qwen3_8_27b_nvfp4qat.v3.ninfer` (QUASAR QAT, as published) | fp8 | **4.94879** | `--quick`, 2026-09-24; re-measured, and it does not reproduce the figure above |
 | `qwen3_8_27b_nvfp4qat.v3.ninfer` (QUASAR QAT, as published) | fp8 | **5.00234** | full corpus, 2026-09-24 |
+| `qwen3_8_27b_nvfp4qat.v3.ninfer` (QUASAR QAT, as published) | fp8 | **4.90484** | `--quick`, 2026-09-26, build with upstream `e31bc99b` merged; 6.48k tok/s, 261,223 tokens. -0.888% on the 2026-09-24 figure: inside the ±1% band, but only 0.11% above its lower edge |
+| `qwen3_8_27b_nvfp4qat.v3.ninfer` (QUASAR QAT, as published) | fp8 | **4.99744** | full corpus, 2026-09-26, same build; 6.53k tok/s, 1,044,876 tokens. **-0.098%** on the 2026-09-24 figure -- the text model's arithmetic is effectively unmoved by the merge |
 | `qwen3_8_27b_nvfp4qat.v3.ninfer` (QUASAR, rebuilt from source) | fp8 | **4.88817** | `--quick`, 2026-09-24 |
 | `qwen3_8_27b_nvfp4qat.v3.ninfer` (QUASAR, rebuilt from source) | fp8 | **4.99097** | full corpus, 2026-09-24 |
 | `qwen3_8_27b_nvfp4qat.v3.ninfer` (QUASAR QAT) | fp8 | **5.88829** | custom corpus, 177,400 tokens |
