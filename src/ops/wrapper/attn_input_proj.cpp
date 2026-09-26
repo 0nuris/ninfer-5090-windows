@@ -6,11 +6,10 @@
 #include "ops/attn_input_proj/nvfp4/nvfp4_attn_input_plan.h"
 #include "ops/attn_input_proj/q4_q5/q4_q5_attn_input_plan.h"
 #include "ops/attn_input_proj/q8/q8_attn_input_plan.h"
-#include "ops/linear/fp8/fp8_config.h"
+#include "ops/linear/fp8/fp8_geometry.h"
 #include "ops/linear/fp8/fp8_format.h"
-#include "ops/linear/nvfp4/nvfp4_config.h"
+#include "ops/linear/nvfp4/nvfp4_layout.h"
 #include "ops/linear/nvfp4/nvfp4_format.h"
-#include "ops/common/validation.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -19,6 +18,10 @@
 
 namespace ninfer::ops {
 namespace {
+
+bool aligned_to(const void* pointer, std::uintptr_t alignment) {
+    return pointer != nullptr && (reinterpret_cast<std::uintptr_t>(pointer) & (alignment - 1)) == 0;
+}
 
 void require_matrix(const Tensor& tensor, std::int32_t rows, std::int32_t cols, const char* label) {
     if (tensor.dtype != DType::BF16 || tensor.ne[0] != rows || tensor.ne[1] != cols ||
@@ -252,17 +255,6 @@ void attn_input_proj(const Tensor& x, const Weight& query_key_value_weight, Tens
     require_matrix(q, kQRows, cols, "q");
     require_matrix(k, kKvRows, cols, "k");
     require_matrix(v, kKvRows, cols, "v");
-
-    if (query_key_value_weight.qtype == QType::NVFP4) {
-        if (hidden != 5120 || query_key_value_weight.n != kRows ||
-            query_key_value_weight.k != hidden) {
-            throw std::invalid_argument("attn_input_proj: unsupported NVFP4 Q/K/V profile");
-        }
-        (void)detail::validate_nvfp4_weight(query_key_value_weight, "attn_input_proj");
-        detail::nvfp4_dflash2_attn_input(x, query_key_value_weight, q, k, v, stream);
-        return;
-    }
-
     require_q8_rowsplit(query_key_value_weight, kRows, hidden, "query/key/value weight");
 
     detail::q8_attn_input_dispatch(x, query_key_value_weight, q, k, v, stream);
