@@ -1,0 +1,58 @@
+[
+ {
+  "file": "start_quasar_v3_dflash2_vision.bat",
+  "art": "qwen3_8_27b_nvfp4qat.v3.ninfer",
+  "ctx": 262144,
+  "tok": 311.1,
+  "acc": "58.0%"
+ },
+ {
+  "file": "start_quasar_v3_mtp4_vision.bat",
+  "art": "qwen3_8_27b_nvfp4qat.v3.ninfer",
+  "ctx": 262144,
+  "tok": 221.5,
+  "acc": "66.9%"
+ },
+ {
+  "file": "start_ninfer_v3_dflash2_vision.bat",
+  "art": "qwen3_8_27b_nvfp4full.v3.ninfer",
+  "ctx": 262144,
+  "tok": 340.4,
+  "acc": "68.8%"
+ },
+ {
+  "file": "start_ninfer_v3_mtp5_vision.bat",
+  "art": "qwen3_8_27b_nvfp4full.v3.ninfer",
+  "ctx": 262144,
+  "tok": 233.7,
+  "acc": "61.7%"
+ },
+ {
+  "file": "start_swift_v3_dflash2_vision.bat",
+  "art": "qwen3_8_27b_nvfp4swift.v3.ninfer",
+  "ctx": 262144,
+  "tok": 321.2,
+  "acc": "60.9%"
+ },
+ {
+  "file": "start_swift_v3_mtp5_vision.bat",
+  "art": "qwen3_8_27b_nvfp4swift.v3.ninfer",
+  "ctx": 262144,
+  "tok": 231.3,
+  "acc": "58.6%"
+ },
+ {
+  "file": "start_nvidia_v3_dflash2_vision.bat",
+  "art": "qwen3_8_27b_nvfp4nvidia.v3.ninfer",
+  "ctx": 262144,
+  "tok": 322.4,
+  "acc": "59.2%"
+ },
+ {
+  "file": "start_nvidia_v3_mtp5_vision.bat",
+  "art": "qwen3_8_27b_nvfp4nvidia.v3.ninfer",
+  "ctx": 262144,
+  "tok": 228.3,
+  "acc": "56.4%"
+ }
+]

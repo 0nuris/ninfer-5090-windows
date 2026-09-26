@@ -1,0 +1,8 @@
+{
+ "protocol": "ninfer-perplexity <artifact> --corpus eval/corpora/perplexity-1m/manifest.json --kv-dtype fp8",
+ "artifact": "C:\\AI\\models\\qwen3_8_27b_nvfp4qat.v3.ninfer",
+ "baseline_quick": 4.94879,
+ "baseline_full": 5.00234,
+ "recorded_spread_note": "4.89741 (09-22), 4.94879 (09-24), 5.00234 full (09-24) on the same artifact",
+ "acceptance": "within +/-1% the kernels are indistinguishable from run-to-run variance; outside it the figures re-state"
+}
