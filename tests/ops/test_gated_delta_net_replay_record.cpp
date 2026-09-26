@@ -120,7 +120,10 @@ int run_case(std::int32_t value_heads, std::int32_t width, std::int32_t batch,
     Tensor value_record_tensor(value_record.p, DType::BF16, {kStateDim, value_heads, width, batch});
     Tensor gate_record_tensor(gate_record.p, DType::FP32, {2, value_heads, width, batch});
 
-    constexpr float kScale = 1.0F / std::sqrt(128.0F);
+    // `const`, not `constexpr`: std::sqrt in a constant expression is a C++26 facility that libstdc++
+    // accepts as an extension and MSVC rejects (C2131). The value is identical -- IEEE sqrt is
+    // correctly rounded -- and the constant is only a runtime argument.
+    const float kScale = 1.0F / std::sqrt(128.0F);
     cudaStream_t stream;
     CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
     cuda_synchronize();
