@@ -3,6 +3,8 @@
 #include "models/qwen3_5/execution/gdn.h"
 #include "models/qwen3_5/execution/mtp.h"
 #include "models/qwen3_5/program/planning/graph_profiles.h"
+#include "models/qwen3_5/program/round_buffers.h"
+#include "models/qwen3_5/program/speculative/ngram_selection.h"
 #include "models/qwen3_5/program/internal.h"
 #include "models/qwen3_5/program/planning/startup.h"
 #include "models/qwen3_5/execution/vision.h"
@@ -814,6 +816,8 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->max_concurrency     = inputs.max_concurrency;
     impl->prefill_chunk       = inputs.prefill_chunk;
     impl->draft_window        = inputs.draft_window;
+    impl->verify_window       = inputs.verify_window;
+    impl->ngram               = inputs.ngram;
     impl->speculative_backend = inputs.speculative_backend;
     impl->proposal_head       = inputs.proposal_head;
     impl->features            = inputs.features;
@@ -845,23 +849,35 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
             impl->graph_allowance_bytes = checked_mul(per_batch_allowance, impl->max_concurrency,
                                                       "MTP exact-b graph allowance");
         } else {
-            const auto class_allowance = [&](std::uint32_t batch_size) {
+            // One family per width. A copy round verifies at verify_window rather than
+            // draft_window, and that is a different body, so it needs its own captured executables
+            // and its own allowance. Measured on this product: a round at draft window 15 costs
+            // +5.7 % against window 7 while committing +28.7 % tokens per round, so the second
+            // family buys a bounded cost rather than a linear one.
+            const auto class_allowance = [&](std::uint32_t window, std::uint32_t batch_size) {
                 const auto profiles = dflash_graph_profiles(
-                    impl->speculative_backend, impl->capacity, impl->draft_window, batch_size);
+                    impl->speculative_backend, impl->capacity, window, batch_size);
                 return graph_topology_allowance(
                     profiles,
                     [&](GraphExecutionProfile profile) {
                         const std::uint64_t final_visible = std::min<std::uint64_t>(
                             impl->capacity,
-                            static_cast<std::uint64_t>(profile.max) + impl->draft_window + 1ULL);
+                            static_cast<std::uint64_t>(profile.max) + window + 1ULL);
                         return (final_visible <= 4096 ? 64ULL : 96ULL) * kMiB;
                     },
                     "DFlash graph allowance");
             };
             for (std::uint32_t batch_size = 1; batch_size <= impl->max_concurrency; ++batch_size) {
                 impl->graph_allowance_bytes =
-                    checked_add(impl->graph_allowance_bytes, class_allowance(batch_size),
+                    checked_add(impl->graph_allowance_bytes,
+                                class_allowance(impl->draft_window, batch_size),
                                 "DFlash exact-b graph allowance");
+                if (impl->verify_window != 0) {
+                    impl->graph_allowance_bytes =
+                        checked_add(impl->graph_allowance_bytes,
+                                    class_allowance(impl->verify_window, batch_size),
+                                    "DFlash copy-window graph allowance");
+                }
             }
         }
     }
@@ -878,12 +894,32 @@ std::unique_ptr<qwen3_5::detail::SequencePlannerImpl>
 make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContext& device,
                            const EngineOptions& options) {
     validate_target_options(parameters, device, options);
+    // A copy round verifies at the wide window, so the plan has to provision it: the round's frame,
+    // its graph family and the GDN record are all sized from it. Zero leaves the plan untouched.
+    std::uint32_t verify_window = 0;
+    if (options.speculative.ngram.mode != NgramDraftMode::Off) {
+        const NgramOptions& ngram = options.speculative.ngram;
+        if (!is_masked_draft_backend(options.speculative.backend)) {
+            throw std::invalid_argument("n-gram copy drafting is not available on this backend");
+        }
+        // The window must be able to exceed the neural depth by the wide-round margin, or a copy
+        // could never be worth a round and the pool would be dead weight. The upper bound is the
+        // round's own column domain rather than the product's copy of it, because that is what
+        // actually sizes the frame, the graph and the GDN record.
+        if (ngram.max_drafts < options.speculative.draft_tokens + kNgramWideRoundMargin ||
+            ngram.max_drafts > kDFlashDecodeMaximumDrafts) {
+            throw std::invalid_argument("n-gram verify window must be in [draft-tokens+3,15] drafts");
+        }
+        verify_window = ngram.max_drafts;
+    }
     SequencePlanningInputs inputs{
         .parameters          = &parameters,
         .capacity            = options.max_context,
         .max_concurrency     = options.max_concurrency,
         .prefill_chunk       = std::min(options.prefill_chunk, options.max_context),
         .draft_window        = options.speculative.draft_tokens,
+        .ngram               = options.speculative.ngram,
+        .verify_window       = verify_window,
         .speculative_backend = options.speculative.backend,
         .kv_storage          = options.kv_cache,
         .proposal_head       = options.speculative.proposal_head,

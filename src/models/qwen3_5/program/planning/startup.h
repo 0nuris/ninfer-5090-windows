@@ -75,7 +75,10 @@ struct SequencePlanningInputs {
     std::uint32_t max_concurrency           = 1;
     std::uint32_t prefill_chunk             = 0;
     std::uint32_t draft_window              = 0;
-    // Copy-proposal width and minimum match, startup-fixed alongside the neural drafter.
+    // Copy drafting. `ngram.mode` off leaves the plan exactly as it was; chain adds the pool, the
+    // wide verify window and the second decode family, all fixed at startup.
+    NgramOptions ngram                      = {};
+    std::uint32_t verify_window             = 0;
     SpeculativeBackend speculative_backend  = SpeculativeBackend::None;
     KvCacheStorage kv_storage               = KvCacheStorage::BFloat16;
     ProposalHead proposal_head              = ProposalHead::Full;
@@ -98,7 +101,10 @@ struct SequencePlanImpl {
     std::uint32_t max_concurrency           = 1;
     std::uint32_t prefill_chunk             = 0;
     std::uint32_t draft_window              = 0;
-    // Copy-proposal width and minimum match, startup-fixed alongside the neural drafter.
+    // Widest verify window a copy round may use; zero when copy drafting is off. It is the round's
+    // own width, so it bounds the frame, the graph and the GDN record alike.
+    std::uint32_t verify_window             = 0;
+    NgramOptions ngram                      = {};
     SpeculativeBackend speculative_backend  = SpeculativeBackend::None;
     KvCacheStorage kv_storage               = KvCacheStorage::BFloat16;
     ProposalHead proposal_head              = ProposalHead::Full;

@@ -25,8 +25,22 @@
 //
 // Cost of a wide round, measured on this product (DFlash2, NVFP4 27B, 8192 context, bf16 KV, CUDA
 // graph, optimised head): 5.567 ms per round at draft window 7 against 5.886 ms at 15, so the wide
-// window costs +5.7% and commits +28.7% tokens per round. Non-copy rounds keep the neural width and
+// window costs +5.7 % and commits +28.7 % tokens per round. Non-copy rounds keep the neural width and
 // pay nothing, which is what bounds the downside.
+//
+// Cost of the second graph family, also measured rather than estimated, and measured *before* the
+// round was written so the price was known before the purchase. On the shipped CLI at 8192 context
+// with draft window 7:
+//
+//   ngram off              CUDA Graph allowance 288.0 MiB   planned device total 22.2 GiB
+//   ngram chain, max 10    CUDA Graph allowance 576.0 MiB   planned device total 22.5 GiB
+//   ngram chain, max 15    CUDA Graph allowance 576.0 MiB   planned device total 22.5 GiB
+//
+// So the wide family costs +288 MiB, exactly doubling the allowance, and the plan's own slack falls
+// from 8.07 to 7.79 GiB. That +288 MiB is the figure an earlier estimate in this work put at ~480
+// MiB, and the 17-23 % of free-memory headroom asserted from it was wrong on both counts. Note also
+// that max 10 and max 15 cost the same: the width does not change how many topologies a family has,
+// so the window should be chosen on benefit, not on allowance.
 //
 // The draft model still runs on a copy round, and its proposal is then overwritten. Skipping it
 // looks like the obvious optimisation and is not: in dflash_decode_batch_body, append_context_impl
@@ -36,8 +50,8 @@
 // round can recover the skipped span is not something this design may assume. Running the drafter
 // and discarding its tokens wastes its work on the rounds where a copy hits, and is the same cost
 // profile the source design measured; it keeps the draft model's state consistent every round, which
-// is worth more than the discarded work. Both shapes need a second captured decode family, because
-// the wide round is a different body, so this choice costs nothing in graph allowance either way.
+// is worth more than the discarded work. Both shapes need the second captured family, so this choice
+// costs nothing in graph allowance either way.
 #include "models/qwen3_5/program/speculative/ngram_policy.h"
 
 #include <algorithm>

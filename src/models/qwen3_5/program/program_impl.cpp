@@ -43,6 +43,7 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
       continuation_capacity(normalized_private_capacity(plan.context_cache)),
       shared_prefix_capacity(plan.context_cache.max_shared_prefixes.value_or(0)),
       prefill_chunk(plan.prefill_chunk), draft_window(plan.draft_window),
+      verify_window(plan.verify_window), ngram(plan.ngram),
       speculative_backend(plan.speculative_backend), kv_storage(plan.kv_storage),
       proposal_head(plan.proposal_head), vision_enabled(plan.features.vision),
       use_cuda_graph(plan.use_cuda_graph), causal_scoring(plan.causal_scoring),
@@ -158,6 +159,20 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
     if (replay_records.has_value() != (speculative_backend != SpeculativeBackend::None) ||
         replay_fold.has_value() != replay_records.has_value()) {
         throw std::logic_error("ReplaySSM records do not match the sequence plan");
+    }
+    // One pool per Program, sized once. Its table is entries * 4 bytes and it allocates nothing
+    // afterwards, so the configured budget is a startup cost and not a per-round one.
+    if (ngram.mode != NgramDraftMode::Off) {
+        const std::size_t entries = ngram.pool_bytes / sizeof(std::uint32_t);
+        ngram_pool.emplace(NgramPoolSpec{
+            .match_tokens = ngram.match_tokens,
+            .entries      = entries,
+            .token_domain = checked_i32(parameters.model.config().text.vocab_size,
+                                        "n-gram pool token domain")});
+    }
+    if (ngram_pool.has_value() != (ngram.mode != NgramDraftMode::Off) ||
+        (verify_window != 0) != ngram_pool.has_value()) {
+        throw std::logic_error("the n-gram pool does not match the sequence plan");
     }
     if (plan.persistent.dflash) {
         CyclicKVCache* local = state_images->dflash_local();

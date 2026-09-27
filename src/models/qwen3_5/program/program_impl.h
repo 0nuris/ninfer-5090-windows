@@ -10,6 +10,7 @@
 #include "models/qwen3_5/frontend/prepared_prompt.h"
 
 #include "models/qwen3_5/program/planning/startup.h"
+#include "models/qwen3_5/program/speculative/ngram_pool.h"
 #include "models/qwen3_5/program/storage/draft_context.h"
 #include "models/qwen3_5/program/storage/host_kv_store.h"
 #include "models/qwen3_5/program/storage/kv_store.h"
@@ -569,6 +570,14 @@ public:
     const std::uint32_t shared_prefix_capacity;
     const std::uint32_t prefill_chunk;
     const std::uint32_t draft_window;
+    // Widest verify window a copy round may use; zero when copy drafting is off. The round picks
+    // between draft_window and this per round, and the second is only reachable when the pool
+    // produced a copy worth the width.
+    const std::uint32_t verify_window;
+    const NgramOptions ngram;
+    // Shared by every lane of this Program; only the decode thread mutates it. A lane's history is
+    // its committed ledger, so the pool keeps no per-lane state.
+    std::optional<NgramDraftPool> ngram_pool;
     const SpeculativeBackend speculative_backend;
     const KvCacheStorage kv_storage;
     const ProposalHead proposal_head;

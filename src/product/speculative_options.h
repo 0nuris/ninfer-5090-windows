@@ -44,10 +44,12 @@ inline void validate_speculative_cli_options(const SpeculativeOptions& options) 
         if (options.ngram.mode != NgramDraftMode::Chain) {
             throw std::invalid_argument("unknown n-gram draft mode");
         }
-        if (options.backend != SpeculativeBackend::Mtp &&
-            options.backend != SpeculativeBackend::DFlash &&
+        // Only the masked-draft route is wired. The MTP route proposes on the host, so it could
+        // chain onto a proposal the way the source design does, but that path is not built here and
+        // accepting the flag would advertise a combination that does nothing.
+        if (options.backend != SpeculativeBackend::DFlash &&
             options.backend != SpeculativeBackend::DFlash2) {
-            throw std::invalid_argument("n-gram copy drafting requires --spec mtp|dflash|dflash2");
+            throw std::invalid_argument("n-gram copy drafting requires --spec dflash|dflash2");
         }
         if (options.ngram.max_drafts == 0 || options.ngram.max_drafts > kNgramMaximumDraftTokens) {
             throw std::invalid_argument("n-gram verify window must be in [1,15]");
