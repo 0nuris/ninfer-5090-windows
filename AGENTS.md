@@ -92,6 +92,41 @@ parallel `final`, `v2`, or `new-design` documents.
 
 ## Verification and completion
 
+### Before proposing anything (user directive, 2026-09-27)
+
+Do the research and re-check the work *first*, then propose. On 2026-09-26/27 a single session
+proposed, in order: that a wider verification round "roughly doubles the target's work" (measured
++5.7 %); that the extra graph family costs ~480 MiB (measured +288 MiB); that the feature would cost
+"17-23 % of headroom" (wrong on both counts); that "no shipped engine combines a neural drafter with
+n-gram drafting" (TRT-LLM and vLLM ship selection, FastDeploy ships concatenation); that byte-identity
+at temperature 0 is the correct correctness gate (the neural route alone already diverges 0.25-0.75
+nats from non-speculative decoding); that a host/device synchronisation sat in the middle of a round
+that only needed a 512-byte field on an existing copy; and that n-gram alone is a viable drafter (it
+rejects 91-98 % of rounds). Each was reasonable from the material at hand and each was wrong. The
+recurring cause is proposing a conclusion before the check that would establish it, and a reviewer
+should treat an unsourced number or an unexplained "this is why" as a defect in the proposal rather
+than as a summary of it.
+
+Concretely, before stating a number, a design conclusion, or a causal claim:
+
+- **A number about cost, time or memory is measured, or labelled an estimate.** Compute what a design
+  *implies*, then measure it. Do not let the arithmetic stand in for the figure; three separate cost
+  claims in one session were falsified exactly that way.
+- **A claim about another project is read to its mechanism, not taken from a headline.** The decisive
+  fact about a design is usually in the code or the commit, and a feature request's premise can be
+  wrong -- llama.cpp #23184 asked for chaining that already existed in the tree at the commit before
+  it was filed.
+- **A claim about this tree is re-read, not recalled.** Name the file and line. This is also why a
+  proposal that quotes our own code without re-reading it is suspect.
+- **Search before proposing an approach at all**, and say which sources were used. If the answer is
+  that nobody has done it, that absence is the finding and it is worth stating as such.
+- **A test result is only evidence if the setup could have passed for the right reason.** Confirm the
+  case under test actually reached the branch it names. Twice in one session a harness omitted an
+  argument -- a model path, then a prompt -- so every "refusal" was for the wrong reason, and a third
+  time an index-based CSV reader turned real data into clean zeros.
+- **Say which of the three it is**: measured here, read in the source, or reported by a third party.
+  An estimate presented as a measurement is the failure this section exists to prevent.
+
 Select evidence to support the changed behavior and material claims. Tests should protect supported
 observable behavior, mathematical or state semantics, and realistic regressions, including plausible
 boundary failures that have not occurred yet. Avoid tests that merely mirror implementation,
