@@ -1,4 +1,4 @@
-﻿// Ported from JGamboa/ninfer-4090-windows (HEAD c6adc56). Body unchanged.
+// Ported from JGamboa/ninfer-4090-windows (HEAD c6adc56). Body unchanged.
 //
 // The load-bearing function is ngram_round_verify_drafts: a round pays the wide copy window only
 // when some row's chained draft actually reached the neural depth plus kNgramWideRoundMargin, and

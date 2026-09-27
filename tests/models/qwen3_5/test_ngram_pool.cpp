@@ -1,4 +1,4 @@
-﻿// Ported from JGamboa/ninfer-4090-windows (HEAD c6adc56). Body unchanged.
+// Ported from JGamboa/ninfer-4090-windows (HEAD c6adc56). Body unchanged.
 //
 // The pool's value is that it drafts from one flat table with no per-lane state and no allocation
 // in the round, so the assertions below are about the two things that can silently corrupt a copy

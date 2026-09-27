@@ -6,6 +6,12 @@ ninfer_add_test(ninfer_ngram_pool_test
 ninfer_add_test(ninfer_ngram_policy_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_ngram_policy.cpp")
 
+# The masked-draft selection decision, header-only and host-only. It is swept exhaustively at its
+# boundary, because both of its failure modes are silent: widening a round the copy cannot pay for,
+# and dropping a copy that would have paid.
+ninfer_add_test(ninfer_ngram_selection_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_ngram_selection.cpp")
+
 ninfer_add_test(ninfer_ngram_graph_planning_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_ngram_graph_planning.cpp"
   LIBRARIES ninfer_model_runtime ninfer_core)

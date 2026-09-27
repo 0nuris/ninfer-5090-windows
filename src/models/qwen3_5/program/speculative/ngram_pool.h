@@ -1,4 +1,4 @@
-﻿// Ported from JGamboa/ninfer-4090-windows (HEAD c6adc56), which attributes the design to
+// Ported from JGamboa/ninfer-4090-windows (HEAD c6adc56), which attributes the design to
 // remesis and in turn llama.cpp ngram-mod. Body unchanged.
 //
 // This replaces the earlier Wallawalla47 port's NgramProposer/NgramArchive pair. The archive

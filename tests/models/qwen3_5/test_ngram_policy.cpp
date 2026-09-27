@@ -1,4 +1,4 @@
-﻿// Ported from JGamboa/ninfer-4090-windows (HEAD c6adc56). Body unchanged.
+// Ported from JGamboa/ninfer-4090-windows (HEAD c6adc56). Body unchanged.
 //
 // ngram_round_verify_drafts is the cost control for the whole feature: it decides whether a round
 // pays the wide copy window or keeps the neural width. These cases pin both outcomes at the
