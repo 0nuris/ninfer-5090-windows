@@ -10,6 +10,7 @@
 #include "models/qwen3_5/frontend/prepared_prompt.h"
 
 #include "models/qwen3_5/program/planning/startup.h"
+#include "models/qwen3_5/program/ngram_proposer.h"
 #include "models/qwen3_5/program/storage/draft_context.h"
 #include "models/qwen3_5/program/storage/host_kv_store.h"
 #include "models/qwen3_5/program/storage/kv_store.h"
@@ -425,6 +426,11 @@ struct RequestControl {
     };
 
     std::optional<Prefill> prefill;
+    // Copy-proposal index for this lane. Built once at materialization, then advanced with the
+    // committed ledger during decode; null whenever ngram drafting is disabled.
+    std::unique_ptr<detail::NgramProposer> ngram;
+    std::size_t ngram_indexed = 0;
+    std::shared_ptr<const NgramSnapshot> ngram_snapshot;
 };
 
 class ProgramImpl {
@@ -569,6 +575,9 @@ public:
     const std::uint32_t shared_prefix_capacity;
     const std::uint32_t prefill_chunk;
     const std::uint32_t draft_window;
+    // Startup-fixed copy-proposal width alongside the neural drafter; zero disables it.
+    const std::uint32_t ngram_draft_window;
+    const std::uint32_t ngram_min_match;
     const SpeculativeBackend speculative_backend;
     const KvCacheStorage kv_storage;
     const ProposalHead proposal_head;
