@@ -8,6 +8,12 @@
 
 namespace ninfer::product {
 
+// Ngram copy proposals are verified in the target's round, so their width is bounded by the
+// round domain the engine provisions (kDFlashDecodeMaximumDrafts). Measured: planned device
+// total and CUDA Graph allowance are identical for every configured width up to that bound,
+// because the buffers are sized to the maximum and a width binds a prefix.
+inline constexpr std::uint32_t kNgramMaximumDraftTokens = 15;
+
 [[nodiscard]] inline SpeculativeBackend parse_speculative_backend(std::string_view value) {
     if (value == "mtp") { return SpeculativeBackend::Mtp; }
     if (value == "dflash") { return SpeculativeBackend::DFlash; }
@@ -39,14 +45,17 @@ inline void validate_speculative_cli_options(const SpeculativeOptions& options) 
         throw std::invalid_argument("ngram archive requires ngram drafting and session capacity "
                                     "between 1 MiB and total archive capacity");
     }
+    // The copy-proposal round shares the target's verification window, which is provisioned to
+    // kDFlashDecodeMaximumDrafts (15) columns; a configured width binds a prefix of it. A wider
+    // proposal would need the round constants and their pinned arrays grown, which is not done.
     if (options.ngram_draft_tokens != 0 &&
         ((options.backend != SpeculativeBackend::DFlash2 &&
           options.backend != SpeculativeBackend::DFlash &&
           options.backend != SpeculativeBackend::Mtp) ||
-         options.ngram_draft_tokens > 63 || options.ngram_min_match < 4 ||
+         options.ngram_draft_tokens > kNgramMaximumDraftTokens || options.ngram_min_match < 4 ||
          options.ngram_min_match > 64)) {
-        throw std::invalid_argument(
-            "ngram requires --spec mtp|dflash|dflash2, drafts 1..63 and match 4..64");
+        throw std::invalid_argument("ngram requires --spec mtp|dflash|dflash2, drafts 1..15 and match "
+                                    "4..64");
     }
     switch (options.backend) {
     case SpeculativeBackend::None:
