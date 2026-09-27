@@ -534,3 +534,57 @@ Thirty-five rules, each earned by a failure rather than chosen:
   directly and both read `false`. A gate seen on one repository says nothing about the next one - the
   check is one request, and asserting a *negative* about access without making it is as wrong as
   asserting one about code without reading it.
+- **Parse a tool's tabular output by header name, never by column position.** A width sweep read
+  `workspace_peak_bytes` as the round count and `prefill_seconds_mean` as the decode time, and
+  printed a clean table of `round=0.000 ms` and `rounds=107360256` at every width - the plausible
+  zeros, produced by a reader that was wrong rather than by a measurement that was. `ninfer_bench`'s
+  CSV has 39 columns and one empty field, so positions are not stable. Take the header line, index by
+  name, and re-derive from the saved logs rather than re-running an expensive sweep to get them.
+- **A bench answers only the route it was written for, and needs its runtime beside it.**
+  `ninfer_qwen3_5_dflash_round_bench` exited `0xC0000135` printing nothing until the FFmpeg DLLs were
+  staged next to it - the same missing-runtime failure `test_v3.cmd`'s header documents for the test
+  tree - and then reported `missing component dflash`, because it measures DFlash v1 while this
+  product's artifacts ship `dflash2`. Stage the DLLs into `build\bench\` as well as
+  `build-test\tests\`, and check the bench's backend against the artifact's before trusting a zero.
+  `ninfer_bench --spec dflash2 --draft-tokens` is the instrument for the shipped lane; it reports
+  `spec_rounds`, `spec_acceptance_rate` and `decode_seconds_mean`, so the round cost is
+  `decode_seconds_mean / spec_rounds`.
+- **Never rewrite code with a regex that crosses a line boundary.** Wrapping fifteen call sites with
+  a match on `f\(\{` and a second pass to close the parenthesis truncated every one of them, because
+  the closing pattern stopped at the first `)`. It reported fifteen successful replacements and the
+  damage was visible only in the compiler output. Write the file, or make one anchored edit; a
+  scripted multi-site rewrite needs a count that must match.
+- **A scripted edit needs an expected occurrence count, and must be idempotent.** A removal script
+  asserted each anchor appeared exactly once; `startup.h` legitimately carried the pair in two
+  structs, and a second run then hit an already-applied edit and stopped. Pass the expected count and
+  treat "already applied" as success, or the second run of a fix reports a false problem with the fix.
+- **An assertion that cannot fail is worse than no assertion.** The guard rejecting a zero neural draft
+  window was "tested" by calling the function with seven. It passed, and it was fiction; it surfaced
+  only because the same test also covered the real empty-batch behaviour. When a check passes,
+  confirm it would have failed without the thing it names.
+- **This card's early runs are unreliable, and the spread is measurable.** Interleaved samples of one
+  configuration differed by 5.8 % and 7.6 % in the first half of a session and by 0.0 % and 0.3 % in the
+  second: the clocks settle. Any effect below about 8 % needs many more repetitions than a recipe's
+  default and a longer warmup, or the verdict is the warmup. Interleave rather than group, and say
+  which half of a session a number came from.
+- **A cost you can compute is not a cost you have measured.** A wider verification round was argued to
+  "roughly double the target's work" and its extra graph family estimated at ~480 MiB; measurement on
+  this product gave **+5.7 %** round time from draft window 7 to 15, and a **288 MiB** graph allowance
+  that did not vary with width at all. Extra columns are nearly free because the weights are read once
+  per forward regardless of column count. Compute what a design *implies*, then measure it, and do not
+  let the arithmetic stand in for the number: three separate cost claims in one session were falsified
+  exactly this way.
+- **A superseded design's surface is removed in the same wave, not left reachable.** Replacing the
+  copy-drafting core meant withdrawing the archive, its option fields, `NgramSessionHints`, three
+  counters, a stats struct, two tests, four CLI flags and a document, in one commit. Anything kept
+  "for now" becomes advertised surface the product cannot honour, and a document naming flags the
+  binary rejects is worse than no document.
+- **A scripted edit's verification must use the file's real consumer, not a convenient parser.**
+  Windows PowerShell 5.1's `Set-Content -Encoding utf8` writes a **BOM**. A scripted edit to
+  `test_baseline.json` was checked with `ConvertFrom-Json`, which accepts a BOM, and passed; the gate
+  then failed on `json.load`, which does not, with "Unexpected UTF-8 BOM". Checking a file with the
+  same tool family that wrote it verifies almost nothing. Write through
+  `[System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))`, and
+  re-read the file with whatever actually consumes it. Five files carried BOMs into a commit this way
+  before the audit found them; audit the *committed* files too, because `git status` no longer lists
+  them.
