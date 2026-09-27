@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "models/qwen3_5/program/internal.h"
 
 #include "core/cyclic_kv_cache.h"
@@ -76,8 +76,6 @@ struct SequencePlanningInputs {
     std::uint32_t prefill_chunk             = 0;
     std::uint32_t draft_window              = 0;
     // Copy-proposal width and minimum match, startup-fixed alongside the neural drafter.
-    std::uint32_t ngram_draft_window        = 0;
-    std::uint32_t ngram_min_match           = 12;
     SpeculativeBackend speculative_backend  = SpeculativeBackend::None;
     KvCacheStorage kv_storage               = KvCacheStorage::BFloat16;
     ProposalHead proposal_head              = ProposalHead::Full;
@@ -101,8 +99,6 @@ struct SequencePlanImpl {
     std::uint32_t prefill_chunk             = 0;
     std::uint32_t draft_window              = 0;
     // Copy-proposal width and minimum match, startup-fixed alongside the neural drafter.
-    std::uint32_t ngram_draft_window        = 0;
-    std::uint32_t ngram_min_match           = 12;
     SpeculativeBackend speculative_backend  = SpeculativeBackend::None;
     KvCacheStorage kv_storage               = KvCacheStorage::BFloat16;
     ProposalHead proposal_head              = ProposalHead::Full;

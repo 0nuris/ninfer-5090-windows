@@ -1,4 +1,4 @@
-#include "models/qwen3_5/execution/attention.h"
+﻿#include "models/qwen3_5/execution/attention.h"
 #include "models/qwen3_5/execution/ffn.h"
 #include "models/qwen3_5/execution/gdn.h"
 #include "models/qwen3_5/execution/mtp.h"
@@ -814,8 +814,6 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->max_concurrency     = inputs.max_concurrency;
     impl->prefill_chunk       = inputs.prefill_chunk;
     impl->draft_window        = inputs.draft_window;
-    impl->ngram_draft_window  = inputs.ngram_draft_window;
-    impl->ngram_min_match     = inputs.ngram_min_match;
     impl->speculative_backend = inputs.speculative_backend;
     impl->proposal_head       = inputs.proposal_head;
     impl->features            = inputs.features;
@@ -886,8 +884,6 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
         .max_concurrency     = options.max_concurrency,
         .prefill_chunk       = std::min(options.prefill_chunk, options.max_context),
         .draft_window        = options.speculative.draft_tokens,
-        .ngram_draft_window  = options.speculative.ngram_draft_tokens,
-        .ngram_min_match     = options.speculative.ngram_min_match,
         .speculative_backend = options.speculative.backend,
         .kv_storage          = options.kv_cache,
         .proposal_head       = options.speculative.proposal_head,

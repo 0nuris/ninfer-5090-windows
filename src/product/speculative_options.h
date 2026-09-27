@@ -8,10 +8,11 @@
 
 namespace ninfer::product {
 
-// Ngram copy proposals are verified in the target's round, so their width is bounded by the
-// round domain the engine provisions (kDFlashDecodeMaximumDrafts). Measured: planned device
-// total and CUDA Graph allowance are identical for every configured width up to that bound,
-// because the buffers are sized to the maximum and a width binds a prefix.
+// A copy-proposal round shares the target's verification window, which the engine provisions to
+// kDFlashDecodeMaximumDrafts (15) columns; a configured width binds a prefix of it. Measured:
+// planned device total and CUDA Graph allowance are identical for every neural draft width up to
+// that bound, because the buffers are sized to the maximum and a width binds a prefix. Widening
+// past it would mean growing the round constants and their pinned arrays, which is not done.
 inline constexpr std::uint32_t kNgramMaximumDraftTokens = 15;
 
 [[nodiscard]] inline SpeculativeBackend parse_speculative_backend(std::string_view value) {
@@ -36,26 +37,31 @@ inline constexpr std::uint32_t kNgramMaximumDraftTokens = 15;
 }
 
 inline void validate_speculative_cli_options(const SpeculativeOptions& options) {
-    // Ngram copy drafting supplements a neural drafter; it is not a drafter itself. Retention
-    // (the archive) is meaningless without drafting, and a session budget is only meaningful
-    // inside the archive's total capacity.
-    if (options.ngram_archive_bytes != 0 &&
-        (options.ngram_draft_tokens == 0 || options.ngram_session_bytes < (1ULL << 20) ||
-         options.ngram_session_bytes > options.ngram_archive_bytes)) {
-        throw std::invalid_argument("ngram archive requires ngram drafting and session capacity "
-                                    "between 1 MiB and total archive capacity");
-    }
-    // The copy-proposal round shares the target's verification window, which is provisioned to
-    // kDFlashDecodeMaximumDrafts (15) columns; a configured width binds a prefix of it. A wider
-    // proposal would need the round constants and their pinned arrays grown, which is not done.
-    if (options.ngram_draft_tokens != 0 &&
-        ((options.backend != SpeculativeBackend::DFlash2 &&
-          options.backend != SpeculativeBackend::DFlash &&
-          options.backend != SpeculativeBackend::Mtp) ||
-         options.ngram_draft_tokens > kNgramMaximumDraftTokens || options.ngram_min_match < 4 ||
-         options.ngram_min_match > 64)) {
-        throw std::invalid_argument("ngram requires --spec mtp|dflash|dflash2, drafts 1..15 and match "
-                                    "4..64");
+    // Copy drafting supplements a neural drafter; it is not a drafter itself. This layer validates
+    // the option's own domain. The interaction between the verify window and the neural depth is
+    // checked in the model layer, which owns the wide-round margin that decides it.
+    if (options.ngram.mode != NgramDraftMode::Off) {
+        if (options.ngram.mode != NgramDraftMode::Chain) {
+            throw std::invalid_argument("unknown n-gram draft mode");
+        }
+        if (options.backend != SpeculativeBackend::Mtp &&
+            options.backend != SpeculativeBackend::DFlash &&
+            options.backend != SpeculativeBackend::DFlash2) {
+            throw std::invalid_argument("n-gram copy drafting requires --spec mtp|dflash|dflash2");
+        }
+        if (options.ngram.max_drafts == 0 || options.ngram.max_drafts > kNgramMaximumDraftTokens) {
+            throw std::invalid_argument("n-gram verify window must be in [1,15]");
+        }
+        if (options.ngram.match_tokens == 0 || options.ngram.match_tokens > 64) {
+            throw std::invalid_argument("n-gram match length must be in [1,64]");
+        }
+        if (options.ngram.min_drafts == 0 || options.ngram.min_drafts > options.ngram.max_drafts) {
+            throw std::invalid_argument("n-gram minimum draft must be in [1,verify window]");
+        }
+        if (options.ngram.pool_bytes < sizeof(std::uint32_t) ||
+            options.ngram.pool_bytes > (4ULL << 30U)) {
+            throw std::invalid_argument("n-gram pool size must be in [4 B,4 GiB]");
+        }
     }
     switch (options.backend) {
     case SpeculativeBackend::None:

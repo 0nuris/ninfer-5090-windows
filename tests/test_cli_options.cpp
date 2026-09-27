@@ -77,69 +77,65 @@ int main() {
                   }),
                   "CLI accepted an unsupported DFlash2 draft count");
     }
-    // Ngram copy drafting supplements a neural drafter, so the width is bounded by the round's
-    // column domain (ninfer::product::kNgramMaximumDraftTokens) rather than the fork's 1..63. The
-    // bound is asserted at both ends: 15 must still be accepted and 16 must not, because a cap
-    // that only rejects the far end would pass a test that never tried the edge.
-    for (const auto k : {1U, 8U, 15U}) {
-        const auto ngram = parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--spec",
-                                  "dflash2", "--draft-tokens", "7", "--ngram-draft-tokens",
-                                  std::to_string(k), "--ngram-min-match", "12"});
-        failures += check(ngram.speculative.ngram_draft_tokens == k &&
-                              ngram.speculative.ngram_min_match == 12,
-                          "CLI did not preserve the ngram draft width and match length");
-    }
+    // Copy drafting supplements a neural drafter, so it needs one, and the verify window is bounded
+    // by the round's column domain (ninfer::product::kNgramMaximumDraftTokens) rather than the
+    // source fork's 1..63. The bound is asserted at both ends: 15 must be accepted and 16 must not,
+    // because a cap that only rejects the far end would pass a test that never tried the edge.
+    const ninfer::cli::Options chained =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--spec", "dflash2",
+               "--draft-tokens", "7", "--ngram", "chain", "--ngram-max", "15", "--ngram-n", "8",
+               "--ngram-min", "1", "--ngram-pool-mib", "16"});
+    failures += check(chained.speculative.ngram.mode == ninfer::NgramDraftMode::Chain &&
+                          chained.speculative.ngram.max_drafts == 15 &&
+                          chained.speculative.ngram.match_tokens == 8 &&
+                          chained.speculative.ngram.min_drafts == 1 &&
+                          chained.speculative.ngram.pool_bytes == (16ULL << 20),
+                      "CLI did not preserve the n-gram chain configuration");
+    failures += check(
+        rejects([] {
+            (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--ngram", "chain"});
+        }),
+        "CLI accepted n-gram copy drafting without a neural drafter");
+    failures += check(
+        rejects([] {
+            (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--spec", "dflash2",
+                         "--draft-tokens", "7", "--ngram", "sideways"});
+        }),
+        "CLI accepted an unknown n-gram draft mode");
     for (const auto k : {16U, 20U, 63U}) {
         failures += check(
             rejects([&] {
                 (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--spec", "dflash2",
-                             "--draft-tokens", "7", "--ngram-draft-tokens", std::to_string(k)});
+                             "--draft-tokens", "7", "--ngram", "chain", "--ngram-max",
+                             std::to_string(k)});
             }),
-            "CLI accepted an ngram width past the round's column domain");
+            "CLI accepted an n-gram verify window past the round's column domain");
     }
-    for (const auto k : {3U, 65U}) {
+    for (const auto k : {0U, 65U}) {
         failures += check(
             rejects([&] {
                 (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--spec", "dflash2",
-                             "--draft-tokens", "7", "--ngram-draft-tokens", "8", "--ngram-min-match",
-                             std::to_string(k)});
+                             "--draft-tokens", "7", "--ngram", "chain", "--ngram-max", "15",
+                             "--ngram-n", std::to_string(k)});
             }),
-            "CLI accepted an ngram match length outside 4..64");
+            "CLI accepted an n-gram match length outside 1..64");
     }
     failures += check(
         rejects([] {
-            (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--ngram-draft-tokens",
-                         "8"});
+            (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--spec", "dflash2",
+                         "--draft-tokens", "7", "--ngram", "chain", "--ngram-max", "15", "--ngram-min",
+                         "16"});
         }),
-        "CLI accepted ngram drafting without a neural drafter");
-    // The archive retains per-session sources, so it is meaningless without drafting, and a session
-    // budget is only meaningful inside the archive's total capacity.
-    const ninfer::cli::Options retained =
-        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--spec", "dflash2",
-               "--draft-tokens", "7", "--ngram-draft-tokens", "8", "--ngram-archive-mib", "512",
-               "--ngram-session-mib", "128"});
-    failures += check(retained.speculative.ngram_archive_bytes == (512ULL << 20) &&
-                          retained.speculative.ngram_session_bytes == (128ULL << 20),
-                      "CLI did not convert the ngram archive and session budgets from MiB");
-    for (const auto pair : std::vector<std::pair<unsigned, unsigned>>{{512, 0}, {512, 1024}}) {
+        "CLI accepted an n-gram minimum draft above the verify window");
+    for (const auto mib : {0U, 4097U}) {
         failures += check(
             rejects([&] {
                 (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--spec", "dflash2",
-                             "--draft-tokens", "7", "--ngram-draft-tokens", "8",
-                             "--ngram-archive-mib", std::to_string(pair.first),
-                             "--ngram-session-mib", std::to_string(pair.second)});
+                             "--draft-tokens", "7", "--ngram", "chain", "--ngram-max", "15",
+                             "--ngram-pool-mib", std::to_string(mib)});
             }),
-            "CLI accepted an ngram session budget outside the archive's capacity");
+            "CLI accepted an n-gram pool size outside [4 B,4 GiB]");
     }
-    // A zero archive is how retention is switched off, and it is the same state as not passing the
-    // flag, so a session figure alongside it is inert rather than contradictory. Asserted because it
-    // is a boundary a future guard could plausibly start rejecting, and the product accepts it today.
-    const ninfer::cli::Options unretained =
-        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--spec", "dflash2",
-               "--draft-tokens", "7", "--ngram-draft-tokens", "8", "--ngram-archive-mib", "0",
-               "--ngram-session-mib", "8"});
-    failures += check(unretained.speculative.ngram_archive_bytes == 0,
-                      "a zero ngram archive is not how the CLI records disabled retention");
     const ninfer::cli::Options nvfp4 =
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--kv-dtype", "nvfp4"});
     failures += check(nvfp4.kv_cache == ninfer::KvCacheStorage::Nvfp4Group16,
@@ -154,8 +150,8 @@ int main() {
               "CLI help omits a production KV storage mode");
     // A flag the product accepts but does not advertise is a half-landed option, and one the help
     // advertises but does not accept is worse. Both directions are asserted for the ngram set.
-    for (const auto* flag : {"--ngram-draft-tokens", "--ngram-min-match", "--ngram-archive-mib",
-                             "--ngram-session-mib"}) {
+    for (const auto* flag : {"--ngram", "--ngram-max", "--ngram-n", "--ngram-min",
+                             "--ngram-pool-mib"}) {
         failures += check(help.find(flag) != std::string::npos,
                           "CLI help omits an accepted ngram option");
     }

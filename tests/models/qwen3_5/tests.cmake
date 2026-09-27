@@ -1,16 +1,13 @@
-# The proposer and the numbered-source parser are header-only, so this needs no library and runs
-# without a GPU. It is the oracle for the ported copy-drafting core; see the file's header note.
-ninfer_add_test(ninfer_ngram_proposer_test
-  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_ngram_proposer.cpp")
+# The draft pool and the chain policy are header-only, so these need no library and run without a
+# GPU. They are the oracle for the ported copy-drafting core; see each file's header note.
+ninfer_add_test(ninfer_ngram_pool_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_ngram_pool.cpp")
+
+ninfer_add_test(ninfer_ngram_policy_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_ngram_policy.cpp")
 
 ninfer_add_test(ninfer_ngram_graph_planning_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_ngram_graph_planning.cpp"
-  LIBRARIES ninfer_model_runtime ninfer_core)
-
-# ngram.cpp comes from ninfer_model_runtime, which already compiles it; recompiling it here would
-# duplicate its symbols. ninfer_core carries the nvtx3 include path and Threads.
-ninfer_add_test(ninfer_ngram_archive_test
-  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_ngram_archive.cpp"
   LIBRARIES ninfer_model_runtime ninfer_core)
 
 ninfer_add_test(ninfer_qwen3_5_loading_real_test
