@@ -918,8 +918,12 @@ publishes the capture-size arithmetic.
 
 ### 7.3 On adding ngram on top of MTP/EAGLE
 
-The evidence is: three attempts, none shipped, and the two that published numbers were neutral to
-negative outside repetition-heavy work.
+The evidence is: the two PRs below are unmerged, but they are not the whole field, and the shape of
+the result depends on hardware class more than on the design. On consumer-class silicon the
+combination is worth low single digits at best and has been measured negative; in the datacenter it
+has been measured both strongly positive and strongly negative, on the same PR family. See
+[ngram-outside-github](ngram-outside-github.md) for the full table, and section 7.4 item 1 for the
+correction to the "nothing shipped" reading.
 
 - vLLM PR #24344 (unmerged): on edit-heavy work the combination is *slower than ngram alone*
   (2.13 vs 1.90 ms TPOT); on code it wins (2.96 vs 3.32); on chat it only matches EAGLE
@@ -938,9 +942,19 @@ what that costs in VRAM, which is the binding constraint here.
 
 ### 7.4 Where the evidence is thin — explicitly
 
-1. **No shipped engine combines a neural drafter with ngram drafting.** Both attempts are open PRs
-   on vLLM and SGLang, and the vLLM RFC was closed as not-planned. Any statement that the
-   combination "works" rests on unmerged code.
+1. ~~**No shipped engine combines a neural drafter with ngram drafting.**~~ **Corrected
+   2026-09-27; this was wrong.** It rested on vLLM and SGLang being open PRs, which said nothing
+   about the engines that already ship the combination. Selection has shipped in production with
+   published numbers -- TensorRT-LLM added `use_sa_spec` / `sa_spec_threshold` to its MTP path
+   (PR #11434; the deprecated standalone `NGram` flags were removed in #12130), and vLLM ships
+   `method: "ngram"`. Concatenation has shipped in exactly one engine, FastDeploy's
+   `mtp_strategy: with_ngram` (2 MTP + 3 ngram into a single verify, kernels ported), and it has
+   published **no** measurements of the hybrid at all. See
+   [ngram-outside-github](ngram-outside-github.md).
+   The thin spot is narrower and sharper than the one originally stated: **no published
+   measurement of the combination on a masked-draft drafter (DFlash/DFlash2), and none on a
+   consumer discrete GPU at RTX 5090 class.** That is precisely this product's configuration, so
+   the combination's effect here is unmeasured, not absent.
 2. **No measurement of a variable-width drafter under a startup-fixed capture regime.** Every
    production design either pads, re-captures, or fixes the width. The specific cost of
    *not* padding — how often a graph leaves and re-enters the warm path, and what that costs in
