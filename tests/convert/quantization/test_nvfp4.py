@@ -9,7 +9,115 @@ from tools.convert.quantization.nvfp4 import (
     FULL_RANGE,
     e2m1_rne_codes,
     encode_block,
+    search_block_ratios,
 )
+
+
+def _error(values: torch.Tensor, codes: torch.Tensor, scales: torch.Tensor,
+           divisor: float) -> float:
+    """Squared reconstruction error, decoded with the independent table above."""
+    return (_decode(codes, scales, divisor) - values).pow(2).sum().item()
+
+
+def _searched(values: torch.Tensor, divisor: float):
+    rows, columns = values.shape
+    blocks = (values.float() * divisor).reshape(rows, columns // 16, 16)
+    return encode_block(values, divisor, search_block_ratios(blocks))
+
+
+def _outlier_heavy(rows: int, columns: int, seed: int) -> torch.Tensor:
+    """Weights whose per-block maximum is a rare spike, which is what the search exists for.
+
+    Real weight matrices are not Gaussian within a 16-wide block: most entries are small and a few
+    are much larger, so a scale that maps the spike onto 6.0 leaves the other fifteen values on the
+    coarse end of the E2M1 grid.
+    """
+    generator = torch.Generator().manual_seed(seed)
+    values = torch.randn(rows, columns, generator=generator) * 0.25
+    spikes = torch.rand(rows, columns // 16, generator=generator) < 0.06
+    values = values + spikes.repeat_interleave(16, dim=1) * torch.tensor(9.0)
+    return values
+
+
+def test_the_searched_scale_never_increases_reconstruction_error() -> None:
+    """The whole point: the max-abs scale is in the candidate set, so this can only match or win."""
+    for seed in range(6):
+        values = _outlier_heavy(128, 256, seed)
+        divisor = FULL_RANGE / values.abs().max().item()
+        maxabs_codes, maxabs_scales = encode_block(values, divisor)
+        codes, scales = _searched(values, divisor)
+        baseline = _error(values, maxabs_codes, maxabs_scales, divisor)
+        assert _error(values, codes, scales, divisor) <= baseline + 1e-9, (
+            f"seed {seed}: searched {_error(values, codes, scales, divisor)} "
+            f"is worse than max-abs {baseline}"
+        )
+
+
+def test_the_search_actually_shrinks_some_blocks() -> None:
+    """A search that never moves is a search that does nothing; it must fire on outlier blocks."""
+    values = _outlier_heavy(128, 256, seed=11)
+    divisor = FULL_RANGE / values.abs().max().item()
+    blocks = (values.float() * divisor).reshape(128, 256 // 16, 16)
+    ratios = search_block_ratios(blocks)
+    assert float(ratios.min()) < 1.0, "no block was shrunk, so the search is inert"
+    assert float(ratios.max()) <= 1.0, "a block was grown, which the candidate set cannot do"
+
+
+def test_a_block_whose_maximum_is_not_an_outlier_keeps_the_max_abs_scale() -> None:
+    """Shrinking only pays where clipping beats coarsening; elsewhere it must not fire."""
+    values = torch.ones(128, 64) * 3.0
+    divisor = FULL_RANGE / 3.0
+    blocks = (values.float() * divisor).reshape(128, 64 // 16, 16)
+    assert float(search_block_ratios(blocks).min()) == 1.0
+
+
+def test_the_searched_path_keeps_the_word_contract() -> None:
+    """Every property the max-abs path holds, the searched path must hold too."""
+    values = _outlier_heavy(128, 64, seed=3)
+    divisor = FULL_RANGE / values.abs().max().item()
+    codes, scales = _searched(values, divisor)
+    assert codes.shape == (128, 32) and codes.dtype == torch.uint8
+    assert scales.shape == (128, 4) and scales.dtype == torch.uint8
+    # The clamp is what makes the block scale a valid E4M3 word.
+    assert float(_step(scales, divisor).max()) <= 448.0
+
+    step = _step(scales, divisor)
+    decoded = _decode(codes, scales, divisor)
+    scaled = (values / step).abs()
+    magnitude = (decoded / step).abs()
+    for lower, upper in zip(E2M1_MAGNITUDES, E2M1_MAGNITUDES[1:]):
+        inside = (scaled >= lower) & (scaled <= upper)
+        if bool(inside.any()):
+            error = (magnitude - scaled).abs()[inside]
+            # A shrunk scale clips, so the bound is checked only on the represented side: a value
+            # beyond the block's top magnitude is the search's deliberate trade, not a miscode.
+            assert float((error / ((upper - lower) / 2)).max()) <= 1.0
+
+
+def test_the_searched_words_survive_the_registered_layout_round_trip() -> None:
+    values = _outlier_heavy(128, 64, seed=5)
+    divisor = FULL_RANGE / values.abs().max().item()
+    codes, scales = _searched(values, divisor)
+    divisor_word = torch.tensor((divisor,), dtype=torch.float32).view(torch.uint8).numpy().tobytes()
+    got_codes, got_scales, got_divisor = decode_nvfp4_words(
+        encode_nvfp4(codes, scales, divisor_word, (128, 64)), (128, 64))
+    assert torch.equal(got_codes, codes)
+    assert torch.equal(got_scales, scales)
+    assert bytes(got_divisor.numpy().tobytes()) == divisor_word
+
+
+def test_the_default_path_is_unchanged() -> None:
+    """Artifacts built to date used the max-abs scale; omitting `ratios` must still produce it.
+
+    If this ever fails, every artifact converted before the change can no longer be reproduced
+    byte-for-byte from the same source, which is the only reason the default is kept.
+    """
+    values = _outlier_heavy(128, 64, seed=7)
+    divisor = FULL_RANGE / values.abs().max().item()
+    plain_codes, plain_scales = encode_block(values, divisor)
+    units_codes, units_scales = encode_block(values, divisor, torch.ones(128, 4, 1))
+    assert torch.equal(plain_codes, units_codes)
+    assert torch.equal(plain_scales, units_scales)
 
 # Written from the format definition, not from the encoder, so the decode below is an
 # independent oracle: E2M1 magnitudes are 0, .5, 1, 1.5, 2, 3, 4, 6 and their negatives.
