@@ -54,7 +54,10 @@ int prepare_verify_case(int k, int batch) {
     DeviceContext context;
     cuda_synchronize();
     const auto launch = [&] {
-        ops::speculative_prepare_verify_inputs(a, d, l, e, full, positions, context.stream);
+        // No copy pair: the null pair must reproduce the previous behaviour exactly, so this call
+        // site stays as the regression guard for the default path.
+        ops::speculative_prepare_verify_inputs(a, d, l, e, full, positions, nullptr, nullptr,
+                                               context.stream);
         ops::speculative_prepare_verify_ids(a, d, e, ids, context.stream);
     };
     DecodeGraphDefinition definition;
@@ -83,6 +86,109 @@ int prepare_verify_case(int k, int batch) {
     failures += d_full.verify_guards("verify full ids");
     failures += d_ids.verify_guards("verify ids");
     failures += d_positions.verify_guards("verify positions");
+    return failures;
+}
+
+// The copy path, qualified against the same host oracle with the copy rule added. The boundaries
+// that matter are a zero count (must reproduce the null path exactly), a count above K (clamped), a
+// negative count (clamped to zero), and a count below the row's extent (a blend, which is why the
+// contract states C[b] >= Pcur[b] for a whole-row copy). The last assertion in every case is that the
+// draft model's own buffer is unchanged: the proposal is its output and the Op must not write it.
+int prepare_verify_copy_case(int k, int batch) {
+    const int width = k + 1;
+    std::vector<std::int32_t> anchors(batch), lengths(batch), drafts(k * batch);
+    std::vector<std::int32_t> copies(k * batch);
+    for (int b = 0; b < batch; ++b) {
+        anchors[b] = 70000 + 11 * b;
+        lengths[b] = 131072 + 1009 * b;
+        for (int j = 0; j < k; ++j) {
+            drafts[b * k + j] = 37 + 257 * b + 7919 * j;
+            copies[b * k + j] = 900000 + 13 * b + 104729 * j;  // disjoint from drafts
+        }
+    }
+    DeviceBuffer d_anchors = to_device(anchors), d_lengths = to_device(lengths);
+    DeviceBuffer d_drafts = to_device(drafts), d_copies = to_device(copies);
+    DeviceBuffer d_extents = to_device(std::vector<std::int32_t>(batch, 0));
+    DeviceBuffer d_copy_extents = to_device(std::vector<std::int32_t>(batch, 0));
+    GuardedDeviceBuffer d_full(width * batch * sizeof(std::int32_t));
+    GuardedDeviceBuffer d_null(width * batch * sizeof(std::int32_t));
+    GuardedDeviceBuffer d_positions(width * batch * sizeof(std::int32_t));
+    Tensor a(d_anchors.p, DType::I32, {batch}), l(d_lengths.p, DType::I32, {batch});
+    Tensor d(d_drafts.p, DType::I32, {k, batch}), c(d_copies.p, DType::I32, {k, batch});
+    Tensor e(d_extents.p, DType::I32, {batch}), ce(d_copy_extents.p, DType::I32, {batch});
+    Tensor with_copy(d_full.data(), DType::I32, {width, batch});
+    Tensor without(d_null.data(), DType::I32, {width, batch});
+    Tensor positions(d_positions.data(), DType::I32, {width, batch});
+
+    int failures = 0;
+    // Copy counts chosen to hit each documented behaviour, including the two out-of-range clamps and
+    // the blend where the copy is shorter than the row's extent.
+    const std::vector<std::int32_t> copy_choices{0, 1, 2, k - 1, k, k + 1, 64, -1};
+    for (const std::int32_t copy_count : copy_choices) {
+        for (int phase = 0; phase <= k; ++phase) {
+            std::vector<std::int32_t> extents(batch), copy_extents(batch);
+            for (int b = 0; b < batch; ++b) {
+                extents[b]      = (phase + 3 * b) % width;
+                copy_extents[b] = copy_count;
+            }
+            DeviceContext context;
+            CUDA_CHECK(cudaMemcpyAsync(d_extents.p, extents.data(), d_extents.bytes,
+                                       cudaMemcpyHostToDevice, context.stream));
+            CUDA_CHECK(cudaMemcpyAsync(d_copy_extents.p, copy_extents.data(), d_copy_extents.bytes,
+                                       cudaMemcpyHostToDevice, context.stream));
+            ops::speculative_prepare_verify_inputs(a, d, l, e, with_copy, positions, &c, &ce,
+                                                   context.stream);
+            ops::speculative_prepare_verify_inputs(a, d, l, e, without, positions, nullptr,
+                                                   nullptr, context.stream);
+            context.synchronize();
+
+            const int clamped = copy_count < 0 ? 0 : (copy_count > k ? k : copy_count);
+            std::vector<std::int32_t> want(width * batch), want_positions(width * batch);
+            for (int b = 0; b < batch; ++b) {
+                for (int j = 0; j < width; ++j) {
+                    const bool inside = j <= extents[b] && j > 0;
+                    const bool copied  = inside && j <= clamped;
+                    want[b * width + j] =
+                        j == 0        ? anchors[b]
+                        : !inside     ? anchors[b]
+                        : copied      ? copies[b * k + j - 1]
+                                      : drafts[b * k + j - 1];
+                    want_positions[b * width + j] = lengths[b] + std::min(j, extents[b]);
+                }
+            }
+            failures += verify_exact("copy ids", read<std::int32_t>(d_full, want.size()), want);
+            failures += verify_exact("null-path ids unchanged", read<std::int32_t>(d_null, want.size()),
+                                     [&] {
+                                         std::vector<std::int32_t> plain(width * batch);
+                                         for (int b = 0; b < batch; ++b)
+                                             for (int j = 0; j < width; ++j)
+                                                 plain[b * width + j] =
+                                                     (j > 0 && j <= extents[b]) ? drafts[b * k + j - 1]
+                                                                                 : anchors[b];
+                                         return plain;
+                                     }());
+            failures += verify_exact("copy positions", read<std::int32_t>(d_positions, want_positions.size()),
+                                     want_positions);
+        }
+    }
+    failures += verify_exact("drafts untouched by the copy path", from_device<std::int32_t>(d_drafts, drafts.size()),
+                             drafts);
+    failures += verify_exact("copies untouched by the copy path", from_device<std::int32_t>(d_copies, copies.size()),
+                             copies);
+    failures += verify_exact("anchors unchanged", from_device<std::int32_t>(d_anchors, batch), anchors);
+    failures += d_full.verify_guards("copy ids");
+    failures += d_null.verify_guards("null-path ids");
+    failures += d_positions.verify_guards("copy positions");
+
+    // The pair is all-or-nothing: one without the other must be refused rather than silently
+    // proposing nothing, which would be indistinguishable from a row that simply had no copy.
+    bool rejected = false;
+    try {
+        DeviceContext context;
+        ops::speculative_prepare_verify_inputs(a, d, l, e, with_copy, positions, &c, nullptr,
+                                               context.stream);
+    } catch (const std::invalid_argument&) { rejected = true; }
+    if (!rejected) { std::cerr << "copy tokens without extents was accepted\n"; ++failures; }
     return failures;
 }
 
@@ -1182,6 +1288,11 @@ int transforms_conformance() {
     int failures = 0;
     for (int k = 1; k <= 15; ++k)
         for (int batch : {1, 8}) failures += prepare_verify_case(k, batch);
+    // The copy path is swept at the boundaries that change behaviour rather than at every width: a
+    // full-width and an over-wide count bracket the clamp, and k=1 exercises the narrowest round a
+    // copy round can use. Every width is already covered by the null path above.
+    for (int k : {1, 2, 7, 15})
+        for (int batch : {1, 8}) failures += prepare_verify_copy_case(k, batch);
     for (int width = 2; width <= 16; ++width)
         for (int batch : {1, 8}) failures += batched_select_hidden_case(width, batch);
     failures += select_hidden_case(5120, 6, 0);

@@ -21,17 +21,31 @@ __global__ void speculative_prepare_verify_inputs_kernel(const std::int32_t* anc
                                                          const std::int32_t* drafts,
                                                          const std::int32_t* base_positions,
                                                          const std::int32_t* current_extents,
+                                                         const std::int32_t* copy_tokens,
+                                                         const std::int32_t* copy_extents,
                                                          std::int32_t* verify_ids,
                                                          std::int32_t* positions, std::int32_t k) {
     const int row = static_cast<int>(blockIdx.y);
     const int T   = k + 1;
     int extent    = current_extents[row];
     extent        = extent < 0 ? 0 : (extent > k ? k : extent);
+    // A copy row replaces the draft model's proposal in the verify block only. The draft model's own
+    // buffer is left untouched, which is what makes this safe without reasoning about the drafter's
+    // state: the proposal is an output, and only the target reads `verify_ids`.
+    int copied = copy_extents == nullptr ? 0 : copy_extents[row];
+    copied     = copied < 0 ? 0 : (copied > k ? k : copied);
     for (int j = static_cast<int>(blockIdx.x) * blockDim.x + threadIdx.x; j < T;
          j += blockDim.x * gridDim.x) {
         const int off = row * T + j;
-        verify_ids[off] =
-            j == 0 ? anchors[row] : (j <= extent ? drafts[row * k + j - 1] : anchors[row]);
+        // j is a 1-based column past the anchor, so a copy at column j-1 lands at the same index
+        // the draft would have occupied.
+        const int from_copy = copied > 0 && j <= copied;
+        verify_ids[off]      = j == 0
+                                   ? anchors[row]
+                                   : (j <= extent
+                                          ? (from_copy ? copy_tokens[row * k + j - 1]
+                                                       : drafts[row * k + j - 1])
+                                          : anchors[row]);
         if (positions != nullptr) {
             positions[off] = base_positions[row] + (j <= extent ? j : extent);
         }

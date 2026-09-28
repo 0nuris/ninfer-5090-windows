@@ -120,7 +120,7 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
         Tensor next_drafts        = frame.next_drafts.slice(0, 0, batch_size);
 
         ops::speculative_prepare_verify_inputs(anchors, current_drafts, frontiers, current_extents,
-                                               verify_ids, target_positions,
+                                               verify_ids, target_positions, nullptr, nullptr,
                                                state.execution.device.stream);
         {
             nvtx::ScopedRange target_range(nvtx::Name::DecodeMtpTarget, nvtx::Category::Mtp,
