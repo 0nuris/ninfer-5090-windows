@@ -16,12 +16,28 @@ artifacts do not need rebuilding**. What the merge invalidated is the recorded p
 
 ## Open, in order
 
-### 1. Perplexity regression on a real artifact, post-merge
+### 1. Perplexity regression on a real artifact, post-merge — **DONE 2026-09-28**
 **Why:** 88 attention files were rewritten wholesale. The suite passes, but the suite does not check
-output *quality* on a real model, and nothing has confirmed quality survived the rewrite.
-**Done when:** `ninfer-perplexity` runs on a shipping artifact at the same corpus and context as
-`docs/perplexity-baseline.md`, and the result is within the recorded band or the regression is
-explained. This gates everything below.
+output *quality* on a real model, and nothing had confirmed quality survived the rewrite.
+**Result:** all four shipping artifacts re-measured, full corpus, fp8, 1,044,876 tokens. QUASAR
+**4.997441** against a recorded **4.99744** — identical to every digit. The reorganisation is
+output-neutral, which is a stronger result than the +/-1% band required. The other three lanes moved
++0.15 % to +0.31 %, but their baselines predate the earlier `e31bc99b` merge and QUASAR's does not,
+so that drift belongs to the older baseline and must not be cited as an attention regression without a
+same-day control. Recorded in `docs/perplexity-baseline.md`.
+
+### 1b. Can a full-NVFP4-coverage artifact be built from NVIDIA's source?
+**Why:** the `nvfp4full` lane is built from `Qwen3.8-27B-NVFP4-unsloth`, a community quantization,
+and scores **5.002854**. The `nvfp4nvidia` lane is built from NVIDIA's ModelOpt output — which is the
+official stock, its 4.90168 sitting against the official 4.90169 on the same protocol — and scores
+**4.915181**. That is a **1.75 % quality gap** on the same protocol, on the same nominal model.
+The lane's name appears to describe a format property rather than a source, so the community
+checkpoint was probably chosen deliberately as the one permitting complete NVFP4 coverage. That
+reasoning is written down nowhere and has not been tested.
+**Done when:** we know whether NVIDIA's checkpoint admits the same complete coverage. If it does, a
+lane built from it is strictly better than the one we ship under that name. If it does not, the
+current split is correct and the reasoning gets written down so the next reader does not have to
+rediscover it.
 
 ### 2. Recall@1 / Recall@16 / path-acceptance split
 **Why:** the only diagnostic that discriminates three different root causes, and it needs no new

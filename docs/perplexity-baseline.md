@@ -52,6 +52,42 @@ cannot separate a real regression from the measurement's own spread.
 | `qwen3_8_27b_nvfp4nvidia.v3.ninfer` (NVIDIA, built from source) | fp8 | **4.71979** | `--quick`, 2026-09-24 |
 | `qwen3_8_27b_nvfp4nvidia.v3.ninfer` (NVIDIA, built from source) | fp8 | **4.90168** | full corpus, 2026-09-24; the official stock measures 4.90169 on the same protocol |
 
+## All four shipping artifacts, re-measured 2026-09-28 after `a012e2bc`
+
+One row per shipped lane, full corpus, fp8 KV, 1,044,876 tokens, on the build carrying the masked-draft
+attention reorganisation. `qwen3_8_27b_nvfp4nvidia.v3.ninfer` is the official stock: its 4.90168 sits
+against the official stock's 4.90169 on the same protocol.
+
+| artifact | source of its weights | 2026-09-24/26 | 2026-09-28 | change |
+|---|---|---:|---:|---:|
+| QUASAR QAT (`nvfp4qat`) | `Qwen3.8-27B-NVFP4-QUASAR` | 4.99744 | **4.997441** | identical |
+| Swift (`nvfp4swift`) | `Swift-Qwen3.8-27B-NVFP4` | 4.92432 | **4.931761** | +0.151 % |
+| NVFP4-full (`nvfp4full`) | `Qwen3.8-27B-NVFP4-unsloth` | 4.98768 | **5.002854** | +0.305 % |
+| NVIDIA ModelOpt (`nvfp4nvidia`) | `Qwen3.8-27B-NVFP4-nvidia` | 4.90168 | **4.915181** | +0.275 % |
+
+Two things this establishes, and one it does not.
+
+**The attention reorganisation is output-neutral.** QUASAR's baseline was re-taken on 2026-09-26, one
+merge later than the other three, and it is unchanged to every digit the table records. The other
+three moved +0.15 % to +0.31 %, but their baselines predate the `e31bc99b` merge that QUASAR's does
+not, and that merge is independently recorded at -0.098 % on QUASAR. So the drift on those three is
+attributable to the older baseline, not to this merge, and the +0.3 % must not be cited as an
+attention regression without a same-day control on the same artifact.
+
+**The `nvfp4full` lane is built from a community quantization and is measurably worse than the
+official one.** Its recipe is `qwen3_8_27b_nvfp4_unsloth` over `Qwen3.8-27B-NVFP4-unsloth`, while
+`nvfp4nvidia` is `qwen3_8_27b_nvfp4_nvidia` over NVIDIA's. On the same protocol the official source
+scores **4.915181 against 5.002854**, a 1.75 % gap. The name appears to describe a format property
+rather than a source -- an earlier row reads "Swift, re-encoded with NVFP4-full's bf16 exceptions" --
+which would make the community checkpoint a deliberate choice as the one permitting complete NVFP4
+coverage. That reasoning is not written down anywhere and has not been tested. Whether a
+full-coverage artifact can be built from NVIDIA's source is open, and if it can, it would be strictly
+better than the lane we ship under that name.
+
+**What this does not establish:** which source is *better for decode acceptance*. Perplexity scores
+the target model only -- `ninfer-perplexity` has no `--spec` option -- so these rows say nothing about
+whether the drafter accepts well against either target.
+
 The custom corpus is this repo's `docs/` and `tests/` markdown, concatenated in sorted order
 (177,400 tokens). On it the two shipped artifacts sit 0.5% apart with QUASAR marginally better, which
 is the like-for-like check: same text, same protocol, two artifacts. The full-corpus rows are not
