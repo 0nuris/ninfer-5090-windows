@@ -69,6 +69,44 @@
 // So the neural lane does not want a wider round, and running wide unconditionally is not a
 // simplification available here -- it is a regression.
 //
+// CORRECTION, same day: the first reading of that table attributed the width-4 advantage to width.
+// It is confounded, and the table cannot separate the two effects. `dflash_target_uses_chunked_-
+// small_t` (graph_profiles.cpp:45-52) returns false when `draft_window + 1 <= 6` at batch size one,
+// so window 4 -- five columns -- is the *only* width in the sweep on the non-chunked small-T target
+// kernel. Windows 7, 11 and 15 are all chunked. The width-4 row therefore differs in kernel path as
+// well as in width, and "window 4 is 31 % faster" is not a statement about width at all.
+//
+// A second sweep was run to separate them, stepping one column at a time across the predicate:
+//
+//   window  columns  chunked  round ms  acceptance  tok/round  tok/s
+//        4        5  no         17.727     22.06 %      1.882  106.19
+//        5        6  no         17.843     16.28 %      1.778   99.63
+//        6        7  yes        18.636      7.45 %      1.455   78.05
+//        7        8  yes        18.432      7.27 %      1.488   80.75
+//        9       10  yes        18.977      4.06 %      1.362   71.76
+//
+// Acceptance falls from 16.28 % to 7.45 % across a *single added column* -- the largest step in either
+// sweep -- and that column is exactly where the kernel predicate flips. Inside the chunked path the
+// series is nearly flat, moving 0.18 points from window 6 to 7. So acceptance is not a smooth
+// function of width; it is discontinuous at the chunking threshold. Round time varies by only 7 %
+// across the whole range, so the throughput gap is driven by tokens committed per round.
+//
+// What is NOT established: whether the chunked target path is numerically less accurate. Acceptance
+// compares a draft token against the target's argmax for its column, so a less precise target
+// produces spurious rejections, and that is consistent with what is measured -- but "consistent with"
+// is not a diagnosis. Settling it needs the chunked and non-chunked paths compared against a naive
+// oracle, per the Op contract in docs/maintainer/op-development.md, and that has not been run. It is
+// also possible that conditioning the masked drafter on a wider block genuinely degrades its proposals.
+// The one-column discontinuity favours the kernel explanation, because the drafter has no reason to
+// change behaviour at a column count that a *target* predicate happens to test.
+//
+// Two consequences, and the first is larger than anything in this feature. The shipped draft window
+// of 7 sits one column past the boundary, so the product is on the low-acceptance side of a
+// discontinuity it does not know about; window 5 measures 99.63 tok/s against window 7's 80.75, a 23 %
+// difference on this configuration. And this file's own design is unaffected by the outcome either
+// way: a copy round shares the neural width, so if the chunked path is fixed this feature benefits
+// with it, and if the default moves to 5 so does the copy round.
+//
 // A separate primary-source review reaches the same conclusion about a copy round from the other
 // direction, and takes the width question out of the design entirely. See
 // docs/research/ngram-copy-selection-signals.md.
@@ -135,8 +173,10 @@
 // profile the source design measured; it keeps the draft model's state consistent every round, which
 // is worth more than the discarded work. Both shapes need the second captured family, so this choice
 // costs nothing in graph allowance either way.
-#include "models/qwen3_5/program/speculative/ngram_policy.h"
-
+//
+// ngram_policy.h is no longer included. It held the source design's chain helpers, its wide-round
+// margin and its positional attribution, all three of which this file replaces or the design has
+// dropped; it had no other production user and existed only on its own test.
 #include <algorithm>
 #include <cstdint>
 #include <span>
@@ -158,18 +198,24 @@ struct CopyRoundDecision {
  * Decide whether a round is served from the copy pool.
  *
  * `usable` holds each row's copy length after the budget, context and capacity clamps, and is empty
- * when no row produced a copy. `draft_window` is the neural draft width, `min_drafts` the shortest
- * pool extension worth spending a round on, and `verify_window` the widest window the plan
- * provisioned.
+ * when no row produced a copy. `draft_window` is the round's width -- the neural draft width, which a
+ * copy round shares -- and `min_drafts` the shortest pool extension worth spending a round on.
  *
  * The rule is a function of copy *length* alone. It reads no history: not the previous round's
  * outcome, not a running hit rate, not a confidence on the last emitted token. A longer copy is
  * treated as a better bet because it has more columns to be accepted in, which is a proxy for
- * acceptance rather than a measurement of it. If n-gram acceptance turns out to be strongly
- * history-dependent -- bursts of hits separated by long dry stretches -- then a length threshold is
- * the wrong signal and a memory of recent outcomes is the right one. That is an open question, not
- * a settled one, and it is recorded here so the next reader knows which assumption this rests on.
- * See docs/research/ for the note that examines it.
+ * acceptance rather than a measurement of it.
+ *
+ * That was recorded here as an open question, and it is now settled against the alternative. The
+ * only copy-versus-neural selector in production, TensorRT-LLM's `SADraftEnhancer`, is three lines
+ * comparing a match length against a threshold -- stateless, per round, per request, binary over the
+ * whole block, default 4. Not the previous round's outcome, not a rolling hit rate, not a
+ * confidence. SAM Decoding's academic form is the same rule with a tuned optimum of 5, and its own
+ * authors call the threshold "a very heuristic approach". The two systems that do read a rolling
+ * acceptance rate, TRT-LLM's `SpeculationGate` and TriForce, use it to kill speculation or to
+ * rebuild a cache, never to route between drafters. Length is what the field uses, and no published
+ * work offers a predictor used to *choose*. See
+ * docs/research/ngram-copy-selection-signals.md.
  *
  * A round is served from the pool only when *every* row has a copy that clears `min_drafts`. At the
  * shipped concurrency of one that is just the single row's answer, which is the configuration the
@@ -186,22 +232,19 @@ struct CopyRoundDecision {
  * 1,080 exhaustive boundary cases currently pin, and it should be decided against a measurement on a
  * concurrent workload rather than folded into the round integration as a drive-by.
  *
- * The round is only widened when the copy is materially wider than the neural depth, by
- * kNgramWideRoundMargin. A copy shorter than that is dropped in favour of the neural round, because
- * the wide window would cost more than the copy returns.
+ * A copy round runs at the same window as a neural round. There is no widened round and no margin to
+ * clear: see the design consequence in this file's header. A copy longer than the round's own width is
+ * truncated to it, because a round verifies exactly `draft_window` drafts and there is no second
+ * layout to verify more.
  *
- * Throws std::invalid_argument when asked to decide a round the plan never provisioned for: an empty
- * or zero-width round, or a verify window too narrow to ever justify leaving the neural one.
+ * Throws std::invalid_argument when asked to decide a round the plan never provisioned for, meaning
+ * a zero-width neural round.
  */
 [[nodiscard]] inline CopyRoundDecision select_copy_round(std::span<const std::uint32_t> usable,
                                                           std::uint32_t draft_window,
-                                                          std::uint32_t min_drafts,
-                                                          std::uint32_t verify_window) {
+                                                          std::uint32_t min_drafts) {
     if (draft_window == 0) {
         throw std::invalid_argument("copy selection needs a neural draft window");
-    }
-    if (verify_window < draft_window + kNgramWideRoundMargin) {
-        throw std::invalid_argument("copy selection needs a verify window above the neural width");
     }
     if (usable.empty() || min_drafts == 0) { return {}; }
 
@@ -210,8 +253,7 @@ struct CopyRoundDecision {
         if (count < min_drafts) { return {}; }  // a row without a usable copy keeps the drafter
         widest = std::max(widest, count);
     }
-    if (widest < draft_window + kNgramWideRoundMargin) { return {}; }
-    return {.copy = true, .verify_drafts = std::min(widest, verify_window)};
+    return {.copy = true, .verify_drafts = std::min(widest, draft_window)};
 }
 
 /**

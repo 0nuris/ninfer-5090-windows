@@ -573,7 +573,6 @@ public:
     // Widest verify window a copy round may use; zero when copy drafting is off. The round picks
     // between draft_window and this per round, and the second is only reachable when the pool
     // produced a copy worth the width.
-    const std::uint32_t verify_window;
     const NgramOptions ngram;
     // Shared by every lane of this Program; only the decode thread mutates it. A lane's history is
     // its committed ledger, so the pool keeps no per-lane state.

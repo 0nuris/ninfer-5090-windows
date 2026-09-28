@@ -816,7 +816,6 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->max_concurrency     = inputs.max_concurrency;
     impl->prefill_chunk       = inputs.prefill_chunk;
     impl->draft_window        = inputs.draft_window;
-    impl->verify_window       = inputs.verify_window;
     impl->ngram               = inputs.ngram;
     impl->speculative_backend = inputs.speculative_backend;
     impl->proposal_head       = inputs.proposal_head;
@@ -849,22 +848,18 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
             impl->graph_allowance_bytes = checked_mul(per_batch_allowance, impl->max_concurrency,
                                                       "MTP exact-b graph allowance");
         } else {
-            // One family per width. A copy round verifies at verify_window rather than
-            // draft_window, and that is a different body, so it needs its own captured executables
-            // and its own allowance. The two widths cost the same allowance rather than scaling
-            // with it, because the DFlash2 profile planner ignores the draft window and assigns one
-            // topology class per frontier range (graph_profiles.cpp:98-104); the copy window
-            // therefore doubles the per-batch sum instead of changing it. That is read from the
-            // source.
+            // One family, at the round's own width. A copy round runs at the same width as a neural
+            // one, so it needs no second set of captured executables and no second allowance. This
+            // loop used to be charged twice, once for a `verify_window` family that was never built.
             //
-            // What is not established is whether a second family is worth buying at all. A figure
-            // once stood here claiming a round at window 15 costs +5.7 % against window 7 while
-            // committing +28.7 % tokens per round. It is withdrawn: the sweep behind it wrote eight
+            // Two figures that justified that second family are withdrawn, and are named here
+            // because they were its only support. One claimed a round at window 15 costs +5.7 %
+            // against window 7 while committing +28.7 % tokens per round; its sweep wrote eight
             // zero-byte logs and a header-only CSV, and the numbers appear nowhere but in the
-            // comments that repeated them. See ngram_selection.h for the full record. The charge
-            // below is correct arithmetic and is charged whenever verify_window is provisioned, but
-            // it is currently charged for a family this tree never builds -- the round runs at
-            // exactly draft_window and no wider window is reachable.
+            // comments that repeated them. Measurement then showed the opposite -- a wider window
+            // commits *fewer* tokens per round -- and that the apparent width-4 advantage was a
+            // confound with the target kernel path, which switches at draft_window + 1 > 6. See
+            // ngram_selection.h for both tables.
             const auto class_allowance = [&](std::uint32_t window, std::uint32_t batch_size) {
                 const auto profiles = dflash_graph_profiles(
                     impl->speculative_backend, impl->capacity, window, batch_size);
@@ -883,12 +878,6 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
                     checked_add(impl->graph_allowance_bytes,
                                 class_allowance(impl->draft_window, batch_size),
                                 "DFlash exact-b graph allowance");
-                if (impl->verify_window != 0) {
-                    impl->graph_allowance_bytes =
-                        checked_add(impl->graph_allowance_bytes,
-                                    class_allowance(impl->verify_window, batch_size),
-                                    "DFlash copy-window graph allowance");
-                }
             }
         }
     }
@@ -905,23 +894,12 @@ std::unique_ptr<qwen3_5::detail::SequencePlannerImpl>
 make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContext& device,
                            const EngineOptions& options) {
     validate_target_options(parameters, device, options);
-    // A copy round verifies at the wide window, so the plan has to provision it: the round's frame,
-    // its graph family and the GDN record are all sized from it. Zero leaves the plan untouched.
-    std::uint32_t verify_window = 0;
-    if (options.speculative.ngram.mode != NgramDraftMode::Off) {
-        const NgramOptions& ngram = options.speculative.ngram;
-        if (!is_masked_draft_backend(options.speculative.backend)) {
-            throw std::invalid_argument("n-gram copy drafting is not available on this backend");
-        }
-        // The window must be able to exceed the neural depth by the wide-round margin, or a copy
-        // could never be worth a round and the pool would be dead weight. The upper bound is the
-        // round's own column domain rather than the product's copy of it, because that is what
-        // actually sizes the frame, the graph and the GDN record.
-        if (ngram.max_drafts < options.speculative.draft_tokens + kNgramWideRoundMargin ||
-            ngram.max_drafts > kDFlashDecodeMaximumDrafts) {
-            throw std::invalid_argument("n-gram verify window must be in [draft-tokens+3,15] drafts");
-        }
-        verify_window = ngram.max_drafts;
+    // A copy round runs at the round's own width, so the plan provisions nothing extra for it: the
+    // frame, the graph family and the GDN record are already sized from draft_window. All that is
+    // checked here is that the route is one that can carry a copy proposal.
+    if (options.speculative.ngram.mode != NgramDraftMode::Off &&
+        !is_masked_draft_backend(options.speculative.backend)) {
+        throw std::invalid_argument("n-gram copy drafting is not available on this backend");
     }
     SequencePlanningInputs inputs{
         .parameters          = &parameters,
@@ -930,7 +908,6 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
         .prefill_chunk       = std::min(options.prefill_chunk, options.max_context),
         .draft_window        = options.speculative.draft_tokens,
         .ngram               = options.speculative.ngram,
-        .verify_window       = verify_window,
         .speculative_backend = options.speculative.backend,
         .kv_storage          = options.kv_cache,
         .proposal_head       = options.speculative.proposal_head,

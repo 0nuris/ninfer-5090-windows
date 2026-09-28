@@ -8,11 +8,11 @@
 
 namespace ninfer::product {
 
-// A copy-proposal round shares the target's verification window, which the engine provisions to
-// kDFlashDecodeMaximumDrafts (15) columns; a configured width binds a prefix of it. Measured:
-// planned device total and CUDA Graph allowance are identical for every neural draft width up to
-// that bound, because the buffers are sized to the maximum and a width binds a prefix. Widening
-// past it would mean growing the round constants and their pinned arrays, which is not done.
+// A copy-proposal round runs at the target's own verification width, which the engine provisions to
+// kDFlashDecodeMaximumDrafts (15) columns. A copy round shares that width rather than widening
+// it, so a copy proposal longer than the round is truncated rather than served at a wider one.
+// Round cost and acceptance both vary with the draft width, and not smoothly: see
+// ngram_selection.h, which records the measurements.
 inline constexpr std::uint32_t kNgramMaximumDraftTokens = 15;
 
 [[nodiscard]] inline SpeculativeBackend parse_speculative_backend(std::string_view value) {
@@ -38,8 +38,8 @@ inline constexpr std::uint32_t kNgramMaximumDraftTokens = 15;
 
 inline void validate_speculative_cli_options(const SpeculativeOptions& options) {
     // Copy drafting supplements a neural drafter; it is not a drafter itself. This layer validates
-    // the option's own domain. The interaction between the verify window and the neural depth is
-    // checked in the model layer, which owns the wide-round margin that decides it.
+    // the option's own domain. The model layer owns the policy that decides whether a copy is worth
+    // a round, and that policy reads no width this layer has to keep in step with.
     if (options.ngram.mode != NgramDraftMode::Off) {
         if (options.ngram.mode != NgramDraftMode::Chain) {
             throw std::invalid_argument("unknown n-gram draft mode");

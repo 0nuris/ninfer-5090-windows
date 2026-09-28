@@ -1,4 +1,4 @@
-﻿#include "models/qwen3_5/program/program_impl.h"
+#include "models/qwen3_5/program/program_impl.h"
 #include "models/qwen3_5/program/context_work.h"
 #include "models/qwen3_5/program/context.h"
 #include "models/qwen3_5/execution/linear.h"
@@ -43,7 +43,7 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
       continuation_capacity(normalized_private_capacity(plan.context_cache)),
       shared_prefix_capacity(plan.context_cache.max_shared_prefixes.value_or(0)),
       prefill_chunk(plan.prefill_chunk), draft_window(plan.draft_window),
-      verify_window(plan.verify_window), ngram(plan.ngram),
+      ngram(plan.ngram),
       speculative_backend(plan.speculative_backend), kv_storage(plan.kv_storage),
       proposal_head(plan.proposal_head), vision_enabled(plan.features.vision),
       use_cuda_graph(plan.use_cuda_graph), causal_scoring(plan.causal_scoring),
@@ -170,8 +170,7 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
             .token_domain = checked_i32(parameters.model.config().text.vocab_size,
                                         "n-gram pool token domain")});
     }
-    if (ngram_pool.has_value() != (ngram.mode != NgramDraftMode::Off) ||
-        (verify_window != 0) != ngram_pool.has_value()) {
+    if (ngram_pool.has_value() != (ngram.mode != NgramDraftMode::Off)) {
         throw std::logic_error("the n-gram pool does not match the sequence plan");
     }
     if (plan.persistent.dflash) {

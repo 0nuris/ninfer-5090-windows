@@ -1,10 +1,17 @@
 // The decision core for masked-draft copy selection, tested exhaustively and off any GPU.
 //
-// This is a control, not coverage. `select_copy_round` decides two things that are easy to get
-// subtly wrong in opposite directions: it must not widen a round that the copy cannot pay for, and
-// it must not drop a copy that would have paid. Both failure modes are silent in production -- one
-// pays for width it does not use, the other leaves performance on the table -- so the cases below
-// pin the boundary from both sides and then sweep the whole input space at it.
+// This is a control, not coverage. `select_copy_round` decides one thing that is easy to get subtly
+// wrong in both directions: it must not drop a copy that would have paid, and it must not claim more
+// drafts than the round can verify. Both failure modes are silent in production -- one leaves
+// performance on the table, the other reads past buffers sized for the round -- so the cases below pin
+// each boundary from both sides and then sweep the whole input space at them.
+//
+// The rule has no widened round. An earlier version of this file tested a `verify_window` parameter
+// and a `kNgramWideRoundMargin` trigger, on the design where a copy round ran wider than a neural one.
+// That design was withdrawn: measurement on this product found the neural lane does not want a wider
+// round, and no shipped engine widens one either. The surviving boundary is the clamp, and it now
+// guards a different thing -- a copy may be longer than the round, and the round verifies exactly
+// `draft_window` drafts, so the excess is truncated rather than served.
 #include "models/qwen3_5/program/speculative/ngram_selection.h"
 
 #include <algorithm>
@@ -17,7 +24,6 @@
 namespace {
 
 using ninfer::models::qwen3_5::CopyRoundDecision;
-using ninfer::models::qwen3_5::kNgramWideRoundMargin;
 using ninfer::models::qwen3_5::select_copy_round;
 using ninfer::models::qwen3_5::selection_source_counts;
 
@@ -38,11 +44,12 @@ bool throws_invalid(F&& f) {
     return false;
 }
 
-constexpr std::uint32_t kNeural = 7;   // the shipped drafter width
-constexpr std::uint32_t kWide   = 15;  // the plan's verify window
-
-// The width at which leaving the neural round starts to pay, by the shared rule.
-constexpr std::uint32_t kTrigger = kNeural + kNgramWideRoundMargin;
+constexpr std::uint32_t kNeural = 7;  // the shipped drafter width, and the copy round's width too
+// A second width to exercise the clamp where it is tightest. Deliberately a local constant rather
+// than the model's kDFlashDecodeMaximumDrafts: including the round buffers here would pull CUDA
+// headers into a policy test that needs no device, and the clamp arithmetic does not care which
+// width it is handed.
+constexpr std::uint32_t kMax = 15;
 
 // std::span has no initializer_list constructor, so even a one-row batch must be named as a real
 // contiguous container. Building it here keeps every call site below reading as the case it is.
@@ -51,85 +58,95 @@ std::vector<std::uint32_t> rows(std::initializer_list<std::uint32_t> values) {
 }
 
 void rejects_impossible_rounds() {
-    // A zero neural width means there is no neural round to fall back to, so asking is a planning
-    // error. An empty batch with a valid width is not an error and is covered as a fallback below.
-    check(throws_invalid([] { (void)select_copy_round(rows({}), 0, 1, kWide); }),
+    // A zero neural width means there is no round to fall back to and nothing to verify against, so
+    // asking is a planning error. An empty batch with a valid width is not an error, and is covered
+    // as a fallback below -- the two must not be conflated.
+    check(throws_invalid([] { (void)select_copy_round(rows({}), 0, 1); }),
           "a zero neural draft window was accepted");
-    // A verify window that cannot exceed the neural width by the margin can never justify a wide
-    // round, so asking is a planning error rather than a decision.
-    check(throws_invalid([] { (void)select_copy_round(rows({12}), kNeural, 1, kNeural + 1); }),
-          "a verify window below draft_tokens + margin was accepted");
-    check(throws_invalid([] { (void)select_copy_round(rows({12}), kNeural, 1, kTrigger - 1); }),
-          "a verify window one below the trigger was accepted");
+    check(throws_invalid([] { (void)select_copy_round(rows({12}), 0, 1); }),
+          "a zero neural draft window was accepted with rows present");
 }
 
 void falls_back_to_the_neural_round() {
     // No row produced a copy at all.
-    check(!select_copy_round(rows({}), kNeural, 1, kWide).copy,
+    check(!select_copy_round(rows({}), kNeural, 1).copy,
           "an empty batch was served from the pool");
     // A copy shorter than min_drafts is not worth a round. Both sides of the threshold are checked:
     // a rule that only rejected the far side would pass a test that never tried the edge.
-    check(!select_copy_round(rows({kTrigger - 1}), kNeural, kTrigger, kWide).copy,
-          "a copy below min_drafts was served");
-    check(select_copy_round(rows({kTrigger}), kNeural, kTrigger, kWide).copy,
-          "a copy exactly at min_drafts was dropped");
-    // A zero min_drafts would let a one-token copy claim a wide round.
-    check(!select_copy_round(rows({12}), kNeural, 0, kWide).copy, "a zero min_drafts was honoured");
-    // A copy no wider than the neural round must not trigger the switch, even though it is long.
-    check(!select_copy_round(rows({kNeural}), kNeural, 1, kWide).copy,
-          "a copy at the neural width widened the round");
-    check(!select_copy_round(rows({kTrigger - 1}), kNeural, 1, kWide).copy,
-          "a copy one below the trigger widened the round");
+    check(!select_copy_round(rows({2}), kNeural, 3).copy, "a copy below min_drafts was served");
+    check(select_copy_round(rows({3}), kNeural, 3).copy, "a copy exactly at min_drafts was dropped");
+    // A zero min_drafts would let a one-token copy claim the round.
+    check(!select_copy_round(rows({12}), kNeural, 0).copy, "a zero min_drafts was honoured");
+    // A row with no copy at all keeps the drafter, however long its neighbours are.
+    check(!select_copy_round(rows({12, 0}), kNeural, 1).copy, "a batch with an empty row was served");
+    check(!select_copy_round(rows({12, 1, 12}), kNeural, 2).copy,
+          "a batch with one row below min_drafts was served");
 }
 
-void serves_and_clamps() {
-    const auto exact = select_copy_round(rows({kTrigger}), kNeural, 1, kWide);
-    check(exact.copy && exact.verify_drafts == kTrigger,
-          "a copy at the trigger did not serve at its own width");
+void serves_at_the_round_width() {
+    // A copy inside the round is served at its own length.
+    const auto exact = select_copy_round(rows({5}), kNeural, 1);
+    check(exact.copy && exact.verify_drafts == 5, "a copy inside the round was not served at its length");
 
-    const auto wide = select_copy_round(rows({kWide}), kNeural, 1, kWide);
-    check(wide.copy && wide.verify_drafts == kWide, "a maximal copy was not served at full width");
+    const auto at_width = select_copy_round(rows({kNeural}), kNeural, 1);
+    check(at_width.copy && at_width.verify_drafts == kNeural,
+          "a copy exactly at the round width was not served");
 
-    // Beyond the provisioned window the round is clamped, not widened: the buffers, the graph and
-    // the GDN record are all sized to verify_window, and a longer copy must not read past them.
-    const auto beyond = select_copy_round(rows({63}), kNeural, 1, kWide);
-    check(beyond.copy && beyond.verify_drafts == kWide,
-          "a copy longer than the verify window was not clamped");
+    // A copy longer than the round is truncated to it. This is the boundary the withdrawal moved: the
+    // buffers, the captured graph and the GDN record are all sized to the round's width, and there is
+    // no second layout, so a longer copy must not read past them.
+    const auto beyond = select_copy_round(rows({63}), kNeural, 1);
+    check(beyond.copy && beyond.verify_drafts == kNeural,
+          "a copy longer than the round width was not clamped to it");
 
-    // Several rows: all must have a copy, and the round takes the widest.
-    const auto mixed = select_copy_round(rows({kTrigger, kWide, kTrigger + 2}), kNeural, 1, kWide);
-    check(mixed.copy && mixed.verify_drafts == kWide,
-          "a fully covered batch did not take the widest");
-    // One row short of min_drafts makes the whole batch keep the drafter, because the draft model
-    // runs over the batch and cannot be skipped for part of it.
-    check(!select_copy_round(rows({kWide, kTrigger - 1}), kNeural, kTrigger, kWide).copy,
-          "a batch with one unusable row still skipped the drafter");
-    check(!select_copy_round(rows({kWide, 0}), kNeural, 1, kWide).copy,
-          "a batch containing an empty row still skipped the drafter");
+    // The same clamp at the plan's maximum window, which is the widest a round can ever be.
+    const auto widest = select_copy_round(rows({kMax}), kMax, 1);
+    check(widest.copy && widest.verify_drafts == kMax, "a copy at the maximum window was not served");
+
+    // Several rows: all must clear min_drafts, and the round takes the widest, truncated to the width.
+    const auto mixed = select_copy_round(rows({3, kNeural, 5}), kNeural, 1);
+    check(mixed.copy && mixed.verify_drafts == kNeural,
+          "a fully covered batch did not take the widest, clamped to the round");
+    const auto mixed_beyond = select_copy_round(rows({kMax, 2, 4}), kNeural, 2);
+    check(mixed_beyond.copy && mixed_beyond.verify_drafts == kNeural,
+          "a batch whose widest copy exceeds the round was not clamped");
 }
 
-// The whole input space at the boundary: every per-row length from 0 past the window, against a
-// min_drafts that also walks the boundary, with the expected answer derived independently.
+// The whole input space at both boundaries: every per-row length from 0 past the round width, against
+// a min_drafts that also walks its range, with the expected answer derived independently of the rule.
 void exhaustive_boundary_sweep() {
     std::uint32_t checked = 0;
-    for (std::uint32_t count = 0; count <= kWide + 2; ++count) {
+    for (std::uint32_t count = 0; count <= kNeural + 2; ++count) {
         const std::vector<std::uint32_t> row{count};
-        for (std::uint32_t min_drafts = 1; min_drafts <= kTrigger; ++min_drafts) {
-            for (std::uint32_t window = kTrigger; window <= kWide; ++window) {
-                const CopyRoundDecision got = select_copy_round(row, kNeural, min_drafts, window);
-                // Independent expectation: serve only when the row clears min_drafts and reaches the
-                // trigger, and never past the provisioned window.
-                const bool want_copy = count >= min_drafts && count >= kTrigger;
-                const std::uint32_t want_width = want_copy ? std::min(count, window) : 0U;
-                if (got.copy != want_copy || got.verify_drafts != want_width) {
-                    std::cerr << "FAIL: count=" << count << " min=" << min_drafts
-                              << " window=" << window << " got copy=" << got.copy
-                              << " width=" << got.verify_drafts << " want copy=" << want_copy
-                              << " width=" << want_width << '\n';
-                    ++failures;
-                }
-                ++checked;
+        for (std::uint32_t min_drafts = 1; min_drafts <= kNeural; ++min_drafts) {
+            const CopyRoundDecision got = select_copy_round(row, kNeural, min_drafts);
+            // Independent expectation: serve only when the row clears min_drafts, and never claim
+            // more drafts than the round verifies.
+            const bool want_copy = count >= min_drafts;
+            const std::uint32_t want_width = want_copy ? std::min(count, kNeural) : 0U;
+            if (got.copy != want_copy || got.verify_drafts != want_width) {
+                std::cerr << "FAIL: count=" << count << " min=" << min_drafts << " got copy="
+                          << got.copy << " width=" << got.verify_drafts << " want copy=" << want_copy
+                          << " width=" << want_width << '\n';
+                ++failures;
             }
+            ++checked;
+        }
+    }
+    // The same sweep at the maximum window, so the clamp is exercised where it is tightest.
+    for (std::uint32_t count = 0; count <= kMax + 2; ++count) {
+        const std::vector<std::uint32_t> row{count};
+        for (std::uint32_t min_drafts = 1; min_drafts <= kMax; ++min_drafts) {
+            const CopyRoundDecision got = select_copy_round(row, kMax, min_drafts);
+            const bool want_copy = count >= min_drafts;
+            const std::uint32_t want_width = want_copy ? std::min(count, kMax) : 0U;
+            if (got.copy != want_copy || got.verify_drafts != want_width) {
+                std::cerr << "FAIL(max) count=" << count << " min=" << min_drafts << " got copy="
+                          << got.copy << " width=" << got.verify_drafts << " want copy=" << want_copy
+                          << " width=" << want_width << '\n';
+                ++failures;
+            }
+            ++checked;
         }
     }
     std::cout << "selection boundary cases=" << checked << '\n';
@@ -156,7 +173,7 @@ void source_attribution() {
 int main() {
     rejects_impossible_rounds();
     falls_back_to_the_neural_round();
-    serves_and_clamps();
+    serves_at_the_round_width();
     exhaustive_boundary_sweep();
     source_attribution();
     if (failures != 0) {

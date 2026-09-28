@@ -89,13 +89,13 @@ enum class NgramDraftMode : std::uint8_t {
 // Copy drafting chained onto a neural drafter's proposal, in the style of llama.cpp ngram-mod.
 // The pool maps the hash of an n-token window to the token that most recently followed it, so a
 // draft needs no draft model; greedy verification keeps the round lossless, and a wrong entry
-// costs only width. A round verifies the wide window only when some row's chained draft reaches
-// the neural depth plus a margin, so a round without a usable copy keeps the narrow width and its
-// cost -- see kNgramWideRoundMargin in the program layer, which owns that decision.
+// costs only width. A copy round runs at the round's own width, so a round without a usable copy
+// keeps the neural proposal and costs exactly what it costs today.
 struct NgramOptions {
     NgramDraftMode mode = NgramDraftMode::Off;
-    // Widest verify window V, in drafts. Bounded below by the neural depth plus the wide-round
-    // margin and above by the round's column domain.
+    // Longest copy the pool may propose, in drafts. Bounded above by the round's column domain; a
+    // proposal longer than the round's width is truncated to it, because a round verifies exactly
+    // draft_window drafts and there is no second layout to verify more.
     std::uint32_t max_drafts = 0;
     // Tokens in the pool's lookup key.
     std::uint32_t match_tokens = 8;
@@ -758,10 +758,10 @@ struct SpeculativeStats {
     std::uint64_t accepted_tokens = 0;
     std::uint64_t fallback_steps  = 0;
     std::vector<std::uint64_t> accepted_per_position;
-    // Copy drafting: the widest verify window this request ran at, how many rounds paid that
-    // width rather than the neural one, and the drafted/accepted split between the two sources.
-    std::uint32_t verify_window         = 0;
-    std::uint64_t wide_rounds           = 0;
+    // Copy drafting: how many drafts came from the copy pool rather than the draft model, and how
+    // many of those were committed. A copy round runs at the same width as a neural one, so there is
+    // no per-width field and no count of rounds that paid a wider window; the width is the request's
+    // ordinary draft window either way.
     std::uint64_t ngram_drafted_tokens  = 0;
     std::uint64_t ngram_accepted_tokens = 0;
 };
