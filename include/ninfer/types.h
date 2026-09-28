@@ -97,12 +97,8 @@ struct NgramOptions {
     // proposal longer than the round's width is truncated to it, because a round verifies exactly
     // draft_window drafts and there is no second layout to verify more.
     std::uint32_t max_drafts = 0;
-    // Tokens in the pool's lookup key.
-    std::uint32_t match_tokens = 8;
-    // A pool extension shorter than this is dropped rather than spent on a wide round.
+    // A copy shorter than this is dropped in favour of the neural round.
     std::uint32_t min_drafts = 1;
-    // Host table size in bytes; the table is entries * 4 and is allocated once at startup.
-    std::size_t pool_bytes = 16ULL << 20;
 };
 
 struct SpeculativeOptions {

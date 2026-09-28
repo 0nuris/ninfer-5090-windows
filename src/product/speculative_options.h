@@ -52,17 +52,10 @@ inline void validate_speculative_cli_options(const SpeculativeOptions& options) 
             throw std::invalid_argument("n-gram copy drafting requires --spec dflash|dflash2");
         }
         if (options.ngram.max_drafts == 0 || options.ngram.max_drafts > kNgramMaximumDraftTokens) {
-            throw std::invalid_argument("n-gram verify window must be in [1,15]");
-        }
-        if (options.ngram.match_tokens == 0 || options.ngram.match_tokens > 64) {
-            throw std::invalid_argument("n-gram match length must be in [1,64]");
+            throw std::invalid_argument("n-gram copy width must be in [1,15]");
         }
         if (options.ngram.min_drafts == 0 || options.ngram.min_drafts > options.ngram.max_drafts) {
-            throw std::invalid_argument("n-gram minimum draft must be in [1,verify window]");
-        }
-        if (options.ngram.pool_bytes < sizeof(std::uint32_t) ||
-            options.ngram.pool_bytes > (4ULL << 30U)) {
-            throw std::invalid_argument("n-gram pool size must be in [4 B,4 GiB]");
+            throw std::invalid_argument("n-gram minimum copy must be in [1,copy width]");
         }
     }
     switch (options.backend) {

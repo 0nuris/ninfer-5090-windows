@@ -1,7 +1,9 @@
-# The draft pool and the chain policy are header-only, so these need no library and run without a
-# GPU. They are the oracle for the ported copy-drafting core; see each file's header note.
-ninfer_add_test(ninfer_ngram_pool_test
-  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_ngram_pool.cpp")
+# The copy proposer, ported from satellitedown/cinference. Host-only, no GPU and no artifact.
+# It is the oracle for the lookup core: window preference, collision re-verification, the periodic
+# continuation, and the learned per-window acceptance estimate.
+ninfer_add_test(ninfer_prompt_lookup_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_prompt_lookup.cpp"
+  LIBRARIES ninfer_model_runtime)
 
 
 # The masked-draft selection decision, header-only and host-only. It is swept exhaustively at its

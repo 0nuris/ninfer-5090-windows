@@ -87,8 +87,7 @@ std::string usage_text(const char* argv0) {
            "       [--kv-dtype bf16|int8|fp8|nvfp4|k8v4] [--spec mtp|dflash|dflash2 --draft-tokens "
            "N]\n"
            "       [--lm-head-draft]\n"
-           "       [--ngram off|chain] [--ngram-max N] [--ngram-n N] [--ngram-min N]\n"
-           "       [--ngram-pool-mib N]\n"
+           "       [--ngram off|chain] [--ngram-max N] [--ngram-min N]\n"
            "       [--temperature F] [--top-p F] [--top-k N] [--min-p F]\n"
            "       [--presence-penalty F] [--frequency-penalty F] [--seed N] [--greedy]\n"
            "       [--stop-token-id N]... [--stop <text>]... [--reasoning-stop <text>]...\n"
@@ -164,13 +163,8 @@ Options parse_options(int argc, char** argv) {
             }
         } else if (arg == "--ngram-max") {
             options.speculative.ngram.max_drafts = parse_u32(value(arg), "ngram-max");
-        } else if (arg == "--ngram-n") {
-            options.speculative.ngram.match_tokens = parse_u32(value(arg), "ngram-n");
         } else if (arg == "--ngram-min") {
             options.speculative.ngram.min_drafts = parse_u32(value(arg), "ngram-min");
-        } else if (arg == "--ngram-pool-mib") {
-            options.speculative.ngram.pool_bytes =
-                static_cast<std::size_t>(parse_u64(value(arg), "ngram-pool-mib")) << 20;
         } else if (arg == "--raw-output") {
             options.raw_output = true;
         } else if (arg == "--print-token-ids") {

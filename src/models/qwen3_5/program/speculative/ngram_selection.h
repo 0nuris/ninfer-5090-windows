@@ -12,14 +12,14 @@
 // about six milliseconds in total, which is a far worse trade than the feature's upside.
 //
 // Selection avoids the synchronisation entirely, because the round's input is already on the host:
-// the lane's committed ledger. The pool proposes from the ledger before anything is launched, and the
-// copy rides the round's existing ingress upload. `speculative_prepare_verify_inputs` substitutes it
-// into `verify_ids`, which is the buffer the target consumes, so the target verifies the copy
-// without knowing or caring where the draft tokens came from. The draft model still runs and its own
-// proposal is discarded for a copied row: it writes into `frame.draft_tokens`, which nothing reads
-// once the copy has replaced it in `verify_ids`. Applying the override at the point of consumption
-// rather than at the point of production is what makes the change safe without reasoning about the
-// draft model's state at all -- see the note on skipping below.
+// the lane's committed ledger. The lookup proposes from the ledger before anything is launched, and
+// the copy rides the round's existing ingress upload. `speculative_prepare_verify_inputs`
+// substitutes it into `verify_ids`, which is the buffer the target consumes, so the target verifies
+// the copy without knowing or caring where the draft tokens came from. The draft model still runs
+// and its own proposal is discarded for a copied row: it writes into `frame.draft_tokens`, which
+// nothing reads once the copy has replaced it in `verify_ids`. Applying the override at the point of
+// consumption rather than at the point of production is what makes the change safe without
+// reasoning about the draft model's state at all -- see the note on skipping below.
 //
 // This also matches the measurements better. On edit-heavy work vLLM's own numbers have n-gram
 // alone at 1.90 ms TPOT against 2.13 for the n-gram + EAGLE combination: keeping the neural drafter
@@ -131,9 +131,22 @@
 // neural round. That removes the second RoundStateLayout, the second captured graph family, the
 // width discriminator in `topology_class` that would otherwise collide and silently drop the wide
 // family's topologies at graphs.cpp:53-58, and the 288 MiB allowance that was being charged for a
-// family this tree never built. What survives is exactly the part that was already right: the pool,
-// the length-threshold policy, the copy override in `speculative_prepare_verify_inputs`, the
-// counters, and the CLI. The override is width-agnostic, so it is unaffected.
+// family this tree never built. What survives is exactly the part that was already right: the
+// length-threshold policy, the copy override in `speculative_prepare_verify_inputs`, the counters,
+// and the CLI. The override is width-agnostic, so it is unaffected.
+//
+// The proposer is PromptLookup, ported from satellitedown/cinference, not the NgramDraftPool this
+// file was first written against; see prompt_lookup.h for the four reasons it is the better one. One
+// bears directly on this file. The pool carried no acceptance estimate, so the rule below had to
+// gate on a bare copy length, and this header recorded that as an open question about whether
+// history was needed. PromptLookup keeps a learned, decayed estimate per window and reports it as a
+// log-probability, so the question is answered and the rule has something better to read.
+//
+// It is also the reason the shape of the integration is likely to change again. The source grafts
+// the chain into a verify tree as extra scored nodes: a chain node at depth d scores
+// d * log_probability, and a neural node under a chain parent takes the better of its two scores.
+// That competes per node instead of overriding a whole row, which is what makes it better and also
+// what this tree cannot yet do.
 //
 // What still has to be measured before the feature earns its place: how many tokens per round a
 // copy actually commits on this lane, against the 1.488 the neural lane commits at window 7 and the

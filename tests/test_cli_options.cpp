@@ -76,20 +76,21 @@ int main() {
                   }),
                   "CLI accepted an unsupported DFlash2 draft count");
     }
-    // Copy drafting supplements a neural drafter, so it needs one, and the verify window is bounded
-    // by the round's column domain (ninfer::product::kNgramMaximumDraftTokens) rather than the
-    // source fork's 1..63. The bound is asserted at both ends: 15 must be accepted and 16 must not,
-    // because a cap that only rejects the far end would pass a test that never tried the edge.
+    // Copy drafting supplements a neural drafter, so it needs one, and the copy width is bounded by
+    // the round's column domain (ninfer::product::kNgramMaximumDraftTokens) rather than the source
+    // fork's 1..63. The bound is asserted at both ends: 15 must be accepted and 16 must not, because
+    // a cap that only rejects the far end would pass a test that never tried the edge.
+    //
+    // The lookup's own parameters are deliberately absent: window lengths are fixed at {8,4,2} and
+    // the tables allocate lazily per sequence, so there is no match length and no pool size to
+    // configure. A flag for either would be a knob with nothing behind it.
     const ninfer::cli::Options chained =
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--spec", "dflash2",
-               "--draft-tokens", "7", "--ngram", "chain", "--ngram-max", "15", "--ngram-n", "8",
-               "--ngram-min", "1", "--ngram-pool-mib", "16"});
+               "--draft-tokens", "7", "--ngram", "chain", "--ngram-max", "15", "--ngram-min", "1"});
     failures += check(chained.speculative.ngram.mode == ninfer::NgramDraftMode::Chain &&
                           chained.speculative.ngram.max_drafts == 15 &&
-                          chained.speculative.ngram.match_tokens == 8 &&
-                          chained.speculative.ngram.min_drafts == 1 &&
-                          chained.speculative.ngram.pool_bytes == (16ULL << 20),
-                      "CLI did not preserve the n-gram chain configuration");
+                          chained.speculative.ngram.min_drafts == 1,
+                      "CLI did not preserve the n-gram copy configuration");
     failures += check(
         rejects([] {
             (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--ngram", "chain"});
@@ -108,16 +109,7 @@ int main() {
                              "--draft-tokens", "7", "--ngram", "chain", "--ngram-max",
                              std::to_string(k)});
             }),
-            "CLI accepted an n-gram verify window past the round's column domain");
-    }
-    for (const auto k : {0U, 65U}) {
-        failures += check(
-            rejects([&] {
-                (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--spec", "dflash2",
-                             "--draft-tokens", "7", "--ngram", "chain", "--ngram-max", "15",
-                             "--ngram-n", std::to_string(k)});
-            }),
-            "CLI accepted an n-gram match length outside 1..64");
+            "CLI accepted an n-gram copy width past the round's column domain");
     }
     failures += check(
         rejects([] {
@@ -125,15 +117,16 @@ int main() {
                          "--draft-tokens", "7", "--ngram", "chain", "--ngram-max", "15", "--ngram-min",
                          "16"});
         }),
-        "CLI accepted an n-gram minimum draft above the verify window");
-    for (const auto mib : {0U, 4097U}) {
+        "CLI accepted an n-gram minimum copy above the copy width");
+    // The withdrawn flags must be refused rather than ignored. A removed option that still parses is
+    // advertised surface the product cannot honour, which is the failure this direction asserts.
+    for (const auto* flag : {"--ngram-n", "--ngram-pool-mib"}) {
         failures += check(
             rejects([&] {
                 (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--spec", "dflash2",
-                             "--draft-tokens", "7", "--ngram", "chain", "--ngram-max", "15",
-                             "--ngram-pool-mib", std::to_string(mib)});
+                             "--draft-tokens", "7", "--ngram", "chain", flag, "8"});
             }),
-            "CLI accepted an n-gram pool size outside [4 B,4 GiB]");
+            "CLI still accepts a withdrawn ngram option");
     }
     const ninfer::cli::Options nvfp4 =
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--kv-dtype", "nvfp4"});
@@ -149,8 +142,7 @@ int main() {
               "CLI help omits a production KV storage mode");
     // A flag the product accepts but does not advertise is a half-landed option, and one the help
     // advertises but does not accept is worse. Both directions are asserted for the ngram set.
-    for (const auto* flag : {"--ngram", "--ngram-max", "--ngram-n", "--ngram-min",
-                             "--ngram-pool-mib"}) {
+    for (const auto* flag : {"--ngram", "--ngram-max", "--ngram-min"}) {
         failures += check(help.find(flag) != std::string::npos,
                           "CLI help omits an accepted ngram option");
     }
