@@ -12,11 +12,14 @@
 // about six milliseconds in total, which is a far worse trade than the feature's upside.
 //
 // Selection avoids the synchronisation entirely, because the round's input is already on the host:
-// the lane's committed ledger. The pool proposes from the ledger before anything is launched, the
-// copy is uploaded directly into the draft-token block, and the draft model is skipped for that
-// round. `speculative_prepare_verify_inputs` and the target then proceed unchanged, since neither
-// knows or cares where the draft tokens came from. The draft model's own state simply catches up on
-// a later round, which is why skipping it is safe rather than merely cheap.
+// the lane's committed ledger. The pool proposes from the ledger before anything is launched, and the
+// copy rides the round's existing ingress upload. `speculative_prepare_verify_inputs` substitutes it
+// into `verify_ids`, which is the buffer the target consumes, so the target verifies the copy
+// without knowing or caring where the draft tokens came from. The draft model still runs and its own
+// proposal is discarded for a copied row: it writes into `frame.draft_tokens`, which nothing reads
+// once the copy has replaced it in `verify_ids`. Applying the override at the point of consumption
+// rather than at the point of production is what makes the change safe without reasoning about the
+// draft model's state at all -- see the note on skipping below.
 //
 // This also matches the measurements better. On edit-heavy work vLLM's own numbers have n-gram
 // alone at 1.90 ms TPOT against 2.13 for the n-gram + EAGLE combination: keeping the neural drafter
@@ -62,8 +65,9 @@
 namespace ninfer::models::qwen3_5 {
 
 struct CopyRoundDecision {
-    // True when the round is served from the pool and the draft model is skipped. False means keep
-    // the neural proposal at the neural width, which is also the answer for every failure to copy.
+    // True when the round is served from the pool. The draft model still runs either way; this flag
+    // selects the proposal, not which model executes. False means keep the neural proposal at the
+    // neural width, which is also the answer for every failure to copy.
     bool copy = false;
     // Drafts to verify. Only meaningful when `copy`; otherwise zero, and the caller uses the
     // neural draft window.
@@ -78,10 +82,29 @@ struct CopyRoundDecision {
  * pool extension worth spending a round on, and `verify_window` the widest window the plan
  * provisioned.
  *
- * The draft model runs over the whole batch, so skipping it is a batch-wide decision: a round is
- * served from the pool only when *every* row has a copy that clears `min_drafts`. At the shipped
- * concurrency of one that is just the single row's answer. A mixed batch keeps the neural proposal,
- * so a copy never costs a row anything when some other row needed the drafter.
+ * The rule is a function of copy *length* alone. It reads no history: not the previous round's
+ * outcome, not a running hit rate, not a confidence on the last emitted token. A longer copy is
+ * treated as a better bet because it has more columns to be accepted in, which is a proxy for
+ * acceptance rather than a measurement of it. If n-gram acceptance turns out to be strongly
+ * history-dependent -- bursts of hits separated by long dry stretches -- then a length threshold is
+ * the wrong signal and a memory of recent outcomes is the right one. That is an open question, not
+ * a settled one, and it is recorded here so the next reader knows which assumption this rests on.
+ * See docs/research/ for the note that examines it.
+ *
+ * A round is served from the pool only when *every* row has a copy that clears `min_drafts`. At the
+ * shipped concurrency of one that is just the single row's answer, which is the configuration the
+ * policy was designed and measured for.
+ *
+ * Above concurrency one this rule is close to inert, and that is worth stating rather than leaving
+ * to be discovered: with a per-round copy acceptance of a few percent, a batch of eight rows will
+ * essentially never all hold a usable copy at once. The rule originally existed because the design
+ * skipped the draft model, which made choosing a copy a batch-wide commitment. That is no longer the
+ * mechanism -- the draft model runs on every round regardless -- and the Op underneath is per-row, so
+ * a mixed batch is representable today. The all-or-nothing rule is therefore a conservative choice
+ * carried over from the superseded design, not a constraint the current one imposes. Widening it to
+ * per-row is the obvious next step and is deliberately not taken here: it changes a policy that
+ * 1,080 exhaustive boundary cases currently pin, and it should be decided against a measurement on a
+ * concurrent workload rather than folded into the round integration as a drive-by.
  *
  * The round is only widened when the copy is materially wider than the neural depth, by
  * kNgramWideRoundMargin. A copy shorter than that is dropped in favour of the neural round, because
