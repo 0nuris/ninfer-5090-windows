@@ -1,4 +1,4 @@
-﻿#include "models/qwen3_5/execution/attention.h"
+#include "models/qwen3_5/execution/attention.h"
 #include "models/qwen3_5/execution/ffn.h"
 #include "models/qwen3_5/execution/gdn.h"
 #include "models/qwen3_5/execution/mtp.h"
@@ -341,10 +341,10 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                     }
                     (void)workspace::gdn_recurrent_output(layout, config, last);
                     if (path == GdnWorkspacePath::Prefill) {
-                        scratch(layout, ops::gated_delta_net_workspace_capacity_bytes(
-                                            dimension(config.gdn->linear_num_key_heads),
-                                            dimension(config.gdn->linear_num_value_heads),
-                                            first, last));
+                        scratch(layout,
+                                ops::gated_delta_net_workspace_capacity_bytes(
+                                    dimension(config.gdn->linear_num_key_heads),
+                                    dimension(config.gdn->linear_num_value_heads), first, last));
                     }
                     (void)workspace::gdn_normalized_output(layout, config, last);
                     add_scratch(layout, gdn.output, first, last);
@@ -848,37 +848,24 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
             impl->graph_allowance_bytes = checked_mul(per_batch_allowance, impl->max_concurrency,
                                                       "MTP exact-b graph allowance");
         } else {
-            // One family, at the round's own width. A copy round runs at the same width as a neural
-            // one, so it needs no second set of captured executables and no second allowance. This
-            // loop used to be charged twice, once for a `verify_window` family that was never built.
-            //
-            // Two figures that justified that second family are withdrawn, and are named here
-            // because they were its only support. One claimed a round at window 15 costs +5.7 %
-            // against window 7 while committing +28.7 % tokens per round; its sweep wrote eight
-            // zero-byte logs and a header-only CSV, and the numbers appear nowhere but in the
-            // comments that repeated them. Measurement then showed the opposite -- a wider window
-            // commits *fewer* tokens per round -- and that the apparent width-4 advantage was a
-            // confound with the target kernel path, which switches at draft_window + 1 > 6. See
-            // ngram_selection.h for both tables.
-            const auto class_allowance = [&](std::uint32_t window, std::uint32_t batch_size) {
-                const auto profiles = dflash_graph_profiles(
-                    impl->speculative_backend, impl->capacity, window, batch_size);
-                return graph_topology_allowance(
-                    profiles,
-                    [&](GraphExecutionProfile profile) {
-                        const std::uint64_t final_visible = std::min<std::uint64_t>(
-                            impl->capacity,
-                            static_cast<std::uint64_t>(profile.max) + window + 1ULL);
-                        return (final_visible <= 4096 ? 64ULL : 96ULL) * kMiB;
-                    },
-                    "DFlash graph allowance");
-            };
-            for (std::uint32_t batch_size = 1; batch_size <= impl->max_concurrency; ++batch_size) {
-                impl->graph_allowance_bytes =
-                    checked_add(impl->graph_allowance_bytes,
-                                class_allowance(impl->draft_window, batch_size),
-                                "DFlash exact-b graph allowance");
-            }
+            // One family, one width, and the profiles no longer depend on batch size, so the
+            // per-class sum is computed once and scaled by the concurrency. This loop was previously
+            // charged twice -- once for a `verify_window` family that the plan provisioned and the
+            // tree never built. Upstream's a012e2bc made the same change independently, by removing
+            // the context-dependent target topology class that the second charge was keyed on.
+            const auto profiles = dflash_graph_profiles(impl->speculative_backend, impl->capacity,
+                                                        impl->draft_window);
+            const auto per_batch_allowance = graph_topology_allowance(
+                profiles,
+                [&](GraphExecutionProfile profile) {
+                    const std::uint64_t final_visible = std::min<std::uint64_t>(
+                        impl->capacity,
+                        static_cast<std::uint64_t>(profile.max) + impl->draft_window + 1ULL);
+                    return (final_visible <= 4096 ? 64ULL : 96ULL) * kMiB;
+                },
+                "DFlash graph allowance");
+            impl->graph_allowance_bytes = checked_mul(per_batch_allowance, impl->max_concurrency,
+                                                      "DFlash exact-b graph allowance");
         }
     }
 

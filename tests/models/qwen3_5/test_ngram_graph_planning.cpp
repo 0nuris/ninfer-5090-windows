@@ -68,14 +68,16 @@ void verify_profiles() {
         for (const auto backend :
              {ninfer::SpeculativeBackend::DFlash, ninfer::SpeculativeBackend::DFlash2}) {
             for (std::uint32_t width = 1; width <= kMaskedMaximumDrafts; ++width) {
-                const auto profiles =
-                    qwen::detail::dflash_graph_profiles(backend, capacity, width, 1);
+                // Three arguments, not four: upstream's a012e2bc removed the batch_size parameter
+                // along with the context-dependent target topology class, so the planned profiles
+                // are now batch-independent and are scaled by the concurrency at the allowance.
+                const auto profiles = qwen::detail::dflash_graph_profiles(backend, capacity, width);
                 require_full_coverage(profiles, capacity, "masked draft");
             }
             bool rejected = false;
             try {
                 (void)qwen::detail::dflash_graph_profiles(backend, capacity,
-                                                          kMaskedMaximumDrafts + 1U, 1);
+                                                          kMaskedMaximumDrafts + 1U);
             } catch (const std::invalid_argument&) { rejected = true; }
             require(rejected, "a masked width past the round's column domain must be refused");
         }
