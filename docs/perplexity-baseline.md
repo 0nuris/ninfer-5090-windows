@@ -100,9 +100,36 @@ re-measured, which is a claim about the revision, not about the arithmetic.
 The local NVFP4 encoder derives each block's E4M3FN scale from the block's absolute maximum, so the
 block's largest value maps onto 6.0, the format maximum. An alternative is to search the scale: pick,
 per block, the shrink factor of the max-abs scale that minimises that block's own squared
-reconstruction error. The premise was that the NVIDIA source records `calibrator=NVFP4MSECalibrator`
-on all 193 of its NVFP4 weight quantizers, so a max-abs scale reproduces a max-calibrated producer
-rather than matching a searched one.
+reconstruction error.
+
+The premise was that the NVIDIA source records `calibrator=NVFP4MSECalibrator` on all 193 of its NVFP4
+weight quantizers, so a max-abs scale reproduces a max-calibrated producer rather than matching a
+searched one. **That premise does not apply to the weights this experiment changed.** The 193 are
+disjoint from the re-encoded set, as `.quant_summary.txt` in the source checkpoint records:
+
+| calibrator | count | which weights |
+|---|---:|---|
+| `NVFP4MSECalibrator` | 193 | 192 `mlp.*` + `lm_head` |
+| `MaxCalibrator` | 609 | 128 `self_attn.*` + 288 `linear_attn.*` + 193 input quantizers |
+
+`hessian` and `local_hessian` appear **zero** times, so the producer used the plain squared-error path
+rather than the Hessian-weighted one that NVIDIA's source says "wins over the plain path" — the
+objective here was the right one to test. But the 193 searched sites are exactly the MLP and
+`lm_head`, which `qwen3_8_27b_nvfp4_nvidia` already imports verbatim with the producer's own codes and
+scales. The 128 object groups re-encoded from BF16 here are the attention and linear-attention
+projections, which the producer quantized as **FP8** with plain max calibration. There was never a
+searched-scale artifact to match for them, and the searched scales the source does contain are already
+in the shipped lane.
+
+So this measures the right question -- what to do about weights the producer never encoded as NVFP4 --
+and the answer is max-abs. It does not measure, and cannot, whether faithfully reproducing
+`NVFP4MSECalibrator` helps: that part of the recipe was never a re-encoding.
+
+One difference from the producer's search remains and is not closed by this result. ModelOpt sweeps
+**126** valid FP8-E4M3 candidates anchored to the tensor's global amax (`block_amax = global_amax *
+candidate`, `candidate = fp8_e4m3/448`), a log-spaced grid over the whole representable range. This
+experiment swept 11 ratios linear in [0.5, 1.0] of each block's own amax. Same objective, different
+and much narrower grid.
 
 Built as `nvfp4_mse` (commit `900a0f78`, reverted in `b891e1e9`) with 11 shrink factors from 1.0
 down to 0.5, candidates cast to E4M3FN before being scored so only representable scales were
@@ -135,9 +162,25 @@ projection that large value is carrying signal.
 Scope of the claim: one grid, one lane, the 128 groups this recipe re-encodes locally, and this
 corpus scored against the target only. It does not show that a searched scale is worse in general, and
 1.0 is the ceiling of this search space rather than a sampled point -- a factor above 1.0 maps every
-block's maximum past 6.0, which is unconditional clipping. What it does settle is that reproducing
-`NVFP4MSECalibrator` faithfully is not automatically better on this model, and that a converter change
-justified by lower weight error has to be measured on perplexity before it is believed.
+block's maximum past 6.0, which is unconditional clipping. What it does settle is that for weights with
+no producer evidence behind them, max-abs is the right default, and that a converter change justified
+by lower weight error has to be measured on perplexity before it is believed.
+
+**The untested axis is the activation scale, and it is the better-motivated one.** ModelOpt ships a
+separate `NVFP4ActHeadroomCalibrator` for the activation *global* scale, and documents the failure mode
+of max calibration in terms that match the shape measured here: a single freak block far above the rest
+drags the global scale up until every other block's scale falls below subnormal and flushes to zero,
+"losing the whole tensor to protect one value", so the default anchors to a 99.99th percentile and
+clips the rare blocks deliberately. The source checkpoint shows exactly that spread --
+`mlp.gate_proj` records `amax=[0.0047, 0.4219]`, a 90x gap between the smallest block and the tensor
+maximum.
+
+Those 128 re-encoded sites are assigned `activation_policy="AllowA4"`, and their
+`activation_input_divisor` is recovered from a source `input_scale` that the producer calibrated for
+**FP8** -- `6 / input_scale` for an FP8 site, against `1 / input_scale` for an already-NVFP4 one. A
+divisor sized for an 8-bit activation is not obviously roomy enough for a 4-bit one, and this
+experiment did not touch it. That is the axis with a documented failure mode behind it, and it is
+open.
 
 ## A `--quick` comparison is decided by four streams
 

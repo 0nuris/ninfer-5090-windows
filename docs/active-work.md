@@ -49,12 +49,20 @@ reconstruction error fell 40-66 % while perplexity rose, which is the finding: p
 output perplexity are decoupled, because the blocks the search improves are the ones it clips, and the
 clipped value is carrying signal.
 
-The premise that motivated this was NVIDIA's own, not ours, and it does not transfer: the source
-checkpoint records `calibrator=NVFP4MSECalibrator` and NVIDIA measured max scaling as the worst of
-four calibrators *on Qwen3.5-9B*. Faithfully reproducing the producer's recipe is not automatically
-better on this model. Full write-up, including the grid and what the result does and does not scope,
-in `docs/perplexity-baseline.md`. The instrument is recoverable from `900a0f78` if a different
-objective is ever worth testing; the tree carries no unused method.
+The premise that motivated this was misattributed, and that is the more useful half. The 193
+`calibrator=NVFP4MSECalibrator` sites in the source's `.quant_summary.txt` are 192 `mlp.*` plus
+`lm_head` — which `qwen3_8_27b_nvfp4_nvidia` already **imports verbatim**, producer codes and scales
+included. The 128 object groups re-encoded here are the `self_attn` (128) and `linear_attn` (288)
+sites, which the producer quantized as **FP8** with plain `MaxCalibrator`. The two sets are disjoint:
+there was never a searched-scale artifact to match for the weights this experiment changed.
+`hessian` and `local_hessian` appear zero times, so the producer did use the plain squared-error path
+and the objective was the right one to test. What survives is that **max-abs is the right default for
+weights with no producer evidence behind them.** Full write-up, the grid difference from ModelOpt's 126
+log-spaced candidates, and what the result does and does not scope, in
+`docs/perplexity-baseline.md`. The instrument is recoverable from `900a0f78`; the tree carries no
+unused method.
+
+**The activation scale is the better-motivated axis, and it is untouched — item 10.**
 
 **Carry forward:** any converter change justified by lower weight error is measured on perplexity
 before it is believed. This is the same rule as "a cost you can compute is not a cost you have
@@ -121,6 +129,26 @@ reference was measured on a lane accepting 27%.
 against our own baseline. **"Built, measured, and not shipped" is an acceptable outcome** and should be
 reported as one.
 
+### 10. The A4 activation divisor at the re-encoded attention sites
+**Why:** this is the axis item 2 was aimed at by mistake, and it has a documented failure mode rather
+than a plausible one. The 128 groups `qwen3_8_27b_nvfp4_nvidia` re-encodes are assigned
+`activation_policy="AllowA4"`, and their `activation_input_divisor` is recovered from a source
+`input_scale` the producer calibrated for **FP8** — `6 / input_scale` at an FP8 site against
+`1 / input_scale` at an already-NVFP4 one (`official_recipes.py`, the `_activation_divisor` probe). A
+divisor sized for 8-bit activations is not obviously roomy enough for 4-bit ones, and nothing here has
+measured it.
+**The producer's own source names this failure mode.** ModelOpt's `NVFP4ActHeadroomCalibrator` exists
+because plain max calibration of the activation global scale "would drag the global scale up so far
+that every other block's FP8 block scale falls below subnormal and flushes to zero — losing the whole
+tensor to protect one value"; its default anchors to the 99.99th percentile and clips the rare blocks
+deliberately instead. The source checkpoint shows exactly that shape: `mlp.gate_proj` records
+`amax=[0.0047, 0.4219]`, a 90x spread between the smallest block and the tensor maximum.
+**Expected gain:** unknown, and that is the point — it is the one quantization scale in these
+artifacts with a documented way to be badly wrong and no measurement behind it.
+**Done when:** the A4 divisors at these sites are compared against headroom-anchored ones on one
+shipping lane, measuring perplexity and decode acceptance. Unlike the weight scale, the comparison
+needs a calibration corpus, so it is a real cost and not a free-at-runtime change.
+
 ---
 
 ## Closed — do not reopen
@@ -137,7 +165,7 @@ Each of these was investigated and settled. They look like open work and are not
 | **The planner's `chunked_target` topology class causes the acceptance cliff** | Refuted by measurement. Acceptance is bit-identical before and after `a012e2bc` removed the predicate. The class selected which shared `cudaGraphExec_t` a profile reused, not which kernel ran. |
 | **Acceptance is low because our drafter is mismatched to the target** | True of `qwen3_8_27b_nvfp4.v3.ninfer` (unsloth quantization plus official drafter — upstream issue 298 section 3 documents 3.3-5.1% for exactly that pairing), but that artifact **is not a shipping lane**. The four shipping lanes accept 52-69%. |
 | **Take the full 16-commit upstream merge** | The 7 fp8 TMA commits fail on MSVC (`error C2719`) and are deferred, not forgotten. Three one-line `alignas` reapplications, already validated here. |
-| **The NVFP4 block scale should be searched, not taken from the block max** | Measured, and it loses: 4.92592 against 4.91518 paired in one window, while weight reconstruction error fell 40-66 %. The premise was NVIDIA's own comparison on Qwen3.5-9B, and it does not transfer to this model. See item 2 and `docs/perplexity-baseline.md`. Lower weight error is not better output quality. |
+| **The NVFP4 block scale should be searched, not taken from the block max** | Measured on the weights that are actually re-encoded, and it loses: 4.925917 against 4.915181 paired in one window, while weight reconstruction error fell 40-66 %. It cannot be said about `NVFP4MSECalibrator` at all: that calibrator's 193 sites are the MLP and `lm_head`, which this recipe imports unencoded, while the re-encoded attention sites are FP8 `MaxCalibrator` in the source. See item 2 and `docs/perplexity-baseline.md`. Lower weight error is not better output quality. |
 | **Lower quantization error implies better perplexity** | The same measurement, stated as the general form. A searched scale that clips a block's largest value reduces squared error on that block and costs output quality, because the large value is carrying signal. Qualify a converter change on perplexity, never on reconstruction error. |
 
 ## Also worth doing, small
