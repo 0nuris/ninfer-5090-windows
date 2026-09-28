@@ -95,6 +95,50 @@ comparable with the `--quick` row, since the corpus subset differs. Give every r
 taken: the QUASAR figure and the official stock's full-corpus figure both failed to reproduce when
 re-measured, which is a claim about the revision, not about the arithmetic.
 
+## A searched NVFP4 block scale is worse, and the weight error says nothing about it
+
+The local NVFP4 encoder derives each block's E4M3FN scale from the block's absolute maximum, so the
+block's largest value maps onto 6.0, the format maximum. An alternative is to search the scale: pick,
+per block, the shrink factor of the max-abs scale that minimises that block's own squared
+reconstruction error. The premise was that the NVIDIA source records `calibrator=NVFP4MSECalibrator`
+on all 193 of its NVFP4 weight quantizers, so a max-abs scale reproduces a max-calibrated producer
+rather than matching a searched one.
+
+Built as `nvfp4_mse` (commit `900a0f78`, reverted in `b891e1e9`) with 11 shrink factors from 1.0
+down to 0.5, candidates cast to E4M3FN before being scored so only representable scales were
+compared, and the max-abs scale in the candidate set so the search could only match or beat it. Wired
+into the `qwen3_8_27b_nvfp4_nvidia` recipe for the 128 object groups it re-encodes locally; the 31
+drafter groups were left on max-abs so one variable moved. The method tallies in the two conversion
+reports differ in exactly those 128 entries and nowhere else.
+
+Paired in one window, full corpus, fp8 KV, both scored on the same revision:
+
+| build | weight reconstruction error | perplexity |
+|---|---:|---:|
+| max-abs, as shipped | baseline | **4.915181334** |
+| searched scale | −40 % to −66 % | **4.925917194** |
+
+**+0.218 %**, and the two builds differ in nothing but weight values. The reports agree on
+`prefill_signature` `ed709b7d…`, on `formats` (`bf16 fp32 nvfp4 q8_g32_fp16`), on every field of
+`execution` (4096 context, `fp8-e4m3-r256`, stride 2048, tile 1024), on the corpus, and on all
+1,044,876 scored tokens. So the searched build changed no format and no plan -- it re-derived the
+E4M3FN scale of 128 object groups and nothing else. The max-abs run reproduces the 4.915181 recorded
+above to every digit, so the harness is sound and the difference is attributable to the scale.
+
+**The search loses, and it loses while doing exactly what it was asked to do.** Reconstruction error
+on 27B-shaped projections fell by 40 % to 66 %, with 37-38 % of blocks shrunk, and perplexity rose
+0.218 %. Per-weight MSE and output perplexity are decoupled here: the blocks that gained the most
+were the ones whose scale shrank, and shrinking means clipping the block's largest values, so what
+the search buys is resolution on the fifteen ordinary values at the cost of the one large one. In a
+projection that large value is carrying signal.
+
+Scope of the claim: one grid, one lane, the 128 groups this recipe re-encodes locally, and this
+corpus scored against the target only. It does not show that a searched scale is worse in general, and
+1.0 is the ceiling of this search space rather than a sampled point -- a factor above 1.0 maps every
+block's maximum past 6.0, which is unconditional clipping. What it does settle is that reproducing
+`NVFP4MSECalibrator` faithfully is not automatically better on this model, and that a converter change
+justified by lower weight error has to be measured on perplexity before it is believed.
+
 ## A `--quick` comparison is decided by four streams
 
 `--quick` scores one stream per domain, 261,223 tokens; `full` scores four per domain, 1,044,876.

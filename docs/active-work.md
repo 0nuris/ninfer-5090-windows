@@ -39,22 +39,26 @@ lane built from it is strictly better than the one we ship under that name. If i
 current split is correct and the reasoning gets written down so the next reader does not have to
 rediscover it.
 
-### 2. Give the local NVFP4 encoder a scale search instead of max scaling
-**Why:** `tools/convert/quantization/nvfp4.py` is `NVFP4_MAXABS_DIVISOR_RNE_V1` and explicitly
-accepts no numerical parameters (`:70`), so it derives every scale from `global_amax`. It is a
-faithful port of Transformer Engine's NVFP4 recipe, validated against a ModelOpt checkpoint — but the
-*source* checkpoint for the `nvfp4nvidia` lane records `calibrator=NVFP4MSECalibrator` on all 193 of
-its NVFP4 weight quantizers. NVIDIA's own comparison measured max scaling as the worst of four
-calibrators (average drop 5.10 against 3.10 for Local-Hessian, on Qwen3.5-9B).
-**Scope:** 320 locally-encoded text projections on `nvfp4nvidia` (80 attention + 240 GDN), 293 on
-`nvfp4full`, and the same axis on `nvfp4swift`. **Zero on `nvfp4qat`** — all 512 of its text NVFP4
-projections are QUASAR's own QAT codes, imported, because its scales were trained.
-**Expected gain:** a fraction of a percent. `docs/maintainer/artifact-conventions.md` section 1 already
-prices the entire local-encoding axis at +0.05 % / +0.50 % perplexity.
-**Why still first:** it is free at runtime, needs no calibration data, and the evidence is the
-producer's own rather than ours.
-**Done when:** the encoder offers a searched scale alongside max, and a conversion of one lane is
-measured on the full corpus against its current figure.
+### 2. Give the local NVFP4 encoder a scale search instead of max scaling - **ANSWERED 2026-09-28, negative**
+Built as `nvfp4_mse` (`900a0f78`, reverted `b891e1e9`), wired into the 128 object groups
+`qwen3_8_27b_nvfp4_nvidia` re-encodes locally, and measured paired against the shipping artifact in one
+window on the full corpus. **Max-abs 4.915181334, searched 4.925917194 — +0.218 %, the wrong way.** The
+two builds share a `prefill_signature`, a format set, an `execution` block and a corpus, so only weight
+values moved, and the max-abs run reproduces the recorded 4.915181 to every digit. Weight
+reconstruction error fell 40-66 % while perplexity rose, which is the finding: per-weight MSE and
+output perplexity are decoupled, because the blocks the search improves are the ones it clips, and the
+clipped value is carrying signal.
+
+The premise that motivated this was NVIDIA's own, not ours, and it does not transfer: the source
+checkpoint records `calibrator=NVFP4MSECalibrator` and NVIDIA measured max scaling as the worst of
+four calibrators *on Qwen3.5-9B*. Faithfully reproducing the producer's recipe is not automatically
+better on this model. Full write-up, including the grid and what the result does and does not scope,
+in `docs/perplexity-baseline.md`. The instrument is recoverable from `900a0f78` if a different
+objective is ever worth testing; the tree carries no unused method.
+
+**Carry forward:** any converter change justified by lower weight error is measured on perplexity
+before it is believed. This is the same rule as "a cost you can compute is not a cost you have
+measured", pointed the other way.
 
 ### 3. The W8 endpoints are 2.52 GiB, 14.3 % of everything bound
 **Why:** both W8 endpoints are Q8, which is the right default and the only choice with a measurement
@@ -133,12 +137,21 @@ Each of these was investigated and settled. They look like open work and are not
 | **The planner's `chunked_target` topology class causes the acceptance cliff** | Refuted by measurement. Acceptance is bit-identical before and after `a012e2bc` removed the predicate. The class selected which shared `cudaGraphExec_t` a profile reused, not which kernel ran. |
 | **Acceptance is low because our drafter is mismatched to the target** | True of `qwen3_8_27b_nvfp4.v3.ninfer` (unsloth quantization plus official drafter — upstream issue 298 section 3 documents 3.3-5.1% for exactly that pairing), but that artifact **is not a shipping lane**. The four shipping lanes accept 52-69%. |
 | **Take the full 16-commit upstream merge** | The 7 fp8 TMA commits fail on MSVC (`error C2719`) and are deferred, not forgotten. Three one-line `alignas` reapplications, already validated here. |
+| **The NVFP4 block scale should be searched, not taken from the block max** | Measured, and it loses: 4.92592 against 4.91518 paired in one window, while weight reconstruction error fell 40-66 %. The premise was NVIDIA's own comparison on Qwen3.5-9B, and it does not transfer to this model. See item 2 and `docs/perplexity-baseline.md`. Lower weight error is not better output quality. |
+| **Lower quantization error implies better perplexity** | The same measurement, stated as the general form. A searched scale that clips a block's largest value reduces squared error on that block and costs output quality, because the large value is carrying signal. Qualify a converter change on perplexity, never on reconstruction error. |
 
 ## Also worth doing, small
 
-- `--ngram` is accepted, does nothing, and reserves 288 MiB. Withdraw it until item 6 lands.
-- `tools/release/check_doc_links.py` does not skip fenced code blocks, so a C++ lambda in a snippet
-  reads as a markdown link. It blocked a commit twice.
+- `--ngram chain` is accepted, validated against the backend, carried into `Program`, and produces
+  nothing: `ngram_drafted_tokens` and `ngram_accepted_tokens` are declared at `types.h:761-762` and
+  written nowhere, and `impl->ngram` (`startup.cpp:819`) is never read. **It does not reserve
+  288 MiB** — that allowance went with `ngram_policy.h` in `8c7242e6`, and `startup.cpp:884` now says a
+  copy round runs at the round's own width and provisions nothing extra. So the fix is item 9, not
+  withdrawal: the flag is the switch `PromptLookup` needs, and the requirement is to add copy
+  drafting. Recorded here only because an earlier revision of this file said to withdraw it, on the
+  strength of the withdrawn allowance.
+- ~~`tools/release/check_doc_links.py` does not skip fenced code blocks~~ — done in `46ec0c5b`, with
+  seven tests, six of which fail against the previous body.
 - DFlash **v1**'s published config has no `is_causal` key, so the reference gives it five causal and
   one non-causal draft layer. Our converter's `_fixed` check only raises when the key is *present*
   and the runtime never reads it, so a converted v1 drafter silently gets a uniformly non-causal
