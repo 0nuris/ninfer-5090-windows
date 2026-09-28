@@ -945,9 +945,14 @@ what that costs in VRAM, which is the binding constraint here.
 1. ~~**No shipped engine combines a neural drafter with ngram drafting.**~~ **Corrected
    2026-09-27; this was wrong.** It rested on vLLM and SGLang being open PRs, which said nothing
    about the engines that already ship the combination. Selection has shipped in production with
-   published numbers -- TensorRT-LLM added `use_sa_spec` / `sa_spec_threshold` to its MTP path
-   (PR #11434; the deprecated standalone `NGram` flags were removed in #12130), and vLLM ships
-   `method: "ngram"`. Concatenation has shipped in exactly one engine, FastDeploy's
+   published numbers, in exactly one engine: TensorRT-LLM added `use_sa_spec` / `sa_spec_threshold`
+   to its MTP path (PR #11434; the deprecated standalone `NGram` flags were removed in #12130).
+   **Corrected again 2026-09-27: vLLM ships no selector.** It has a standalone `method: "ngram"`
+   proposal path, but its `SpeculativeMethod` literal carries no hybrid value, `vllm/v1/spec_decode/`
+   has no router, and the PR that would add one (#24344) is still unmerged. Reading "vLLM ships
+   ngram" as "vLLM ships ngram-with-a-drafter" was the same headline error as the original claim, one
+   level down. See [ngram-copy-selection-signals](ngram-copy-selection-signals.md).
+   Concatenation has shipped in exactly one engine, FastDeploy's
    `mtp_strategy: with_ngram` (2 MTP + 3 ngram into a single verify, kernels ported), and it has
    published **no** measurements of the hybrid at all. See
    [ngram-outside-github](ngram-outside-github.md).

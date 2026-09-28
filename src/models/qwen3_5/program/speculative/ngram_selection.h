@@ -42,11 +42,74 @@
 // topologies a family has, which is why the two widths cost the same allowance, and why adding the
 // copy window doubles it rather than scaling it. That is read from the source, not measured.
 //
-// The cost/benefit of a wide round is unmeasured and is the first thing to establish, because it
-// decides the architecture. If a wide round is a net throughput win on its own, the round should run
-// wide unconditionally and the two-layout design below is unnecessary. If acceptance falls with
-// width on real traffic, the wide round is worth paying for only on the rounds a copy fills, and the
-// second layout earns its cost. Do not size the design on either answer until it is measured.
+// Measured on 2026-09-27, and the result argues against the design this file describes.
+//
+// DFlash2, NVFP4 27B, bf16 KV, 8192 context, 64 generated tokens, optimised proposal head, CUDA
+// graph, RTX 5090. `ninfer_bench --spec dflash2 --draft-tokens k -n 64 -r 1 --warmup 1`, two
+// interleaved samples per width agreeing to 0.3-0.8 %, with -r 1 so that `spec_rounds` (a sum) and
+// `decode_seconds_mean` (a mean) share a convention and need no inference to divide:
+//
+//   window   round ms   acceptance   tok/round   throughput
+//        4      17.816       22.06 %       1.882      105.7 tok/s
+//        7      18.487        7.27 %       1.488       80.5 tok/s
+//       11      18.767        3.61 %       1.362       72.6 tok/s
+//       15      19.702        4.20 %       1.600       81.2 tok/s
+//
+// Three things follow, and the first two are the opposite of what this design assumed.
+//
+// Round cost is not flat in width. It rises monotonically, +10.6 % from window 4 to window 15, and
+// +6.6 % from the shipped window 7 to 15. The cost of a wide round is therefore a real and
+// per-column price, not a bounded one.
+//
+// A wider window commits fewer tokens per round, not more. Acceptance collapses from 22.1 % at
+// window 4 to 3.6-4.2 % at windows 11-15, and tokens per round falls from 1.882 to 1.362 before a
+// slight recovery to 1.600 at 15. The wide window is worse on both axes at once: more time per round
+// and fewer tokens per round. Throughput at window 4 is 31 % above the shipped window 7.
+//
+// So the neural lane does not want a wider round, and running wide unconditionally is not a
+// simplification available here -- it is a regression.
+//
+// A separate primary-source review reaches the same conclusion about a copy round from the other
+// direction, and takes the width question out of the design entirely. See
+// docs/research/ngram-copy-selection-signals.md.
+//
+//   - No shipped engine widens a copy round. TensorRT-LLM's `SADraftEnhancer`, the only copy-versus-
+//     neural selector in production anywhere, uses one `max_draft_len` for both arms and has no
+//     width parameter in the file. Baseten lists "dynamic-length speculation" as future work and
+//     advertises the gain as arriving "without requiring any changes to configuration parameters
+//     such as draft length". The two shipped adaptive-width mechanisms, vLLM's
+//     `num_speculative_tokens_per_batch_size` and TRT-LLM's `draft_len_schedule`, are keyed on batch
+//     size, not on which drafter won a round.
+//   - Because the draft model runs on both arms here, the mixing rate cancels out of the break-even
+//     entirely: a copy round is worth taking exactly when its tokens per round exceed the neural
+//     round's times the cost factor. How often the policy chooses copy does not affect that at all,
+//     so there is no "how aggressive should selection be" tuning problem to solve.
+//
+// With the cost factor at 1.0 for a same-width copy round, the bar is simply "beats the neural round
+// per round", which is a much easier thing for a verbatim repetition to clear than a wide round
+// needs to clear while also paying +6.6 % for the width.
+//
+// DESIGN CONSEQUENCE: the wide copy round is dropped. A copy round runs at the same window as a
+// neural round. That removes the second RoundStateLayout, the second captured graph family, the
+// width discriminator in `topology_class` that would otherwise collide and silently drop the wide
+// family's topologies at graphs.cpp:53-58, and the 288 MiB allowance that was being charged for a
+// family this tree never built. What survives is exactly the part that was already right: the pool,
+// the length-threshold policy, the copy override in `speculative_prepare_verify_inputs`, the
+// counters, and the CLI. The override is width-agnostic, so it is unaffected.
+//
+// What still has to be measured before the feature earns its place: how many tokens per round a
+// copy actually commits on this lane, against the 1.488 the neural lane commits at window 7 and the
+// 1.882 it commits at window 4. Note also that the earlier figure of 58 % neural acceptance, which
+// the primary-source review used in its arithmetic, does not reconcile with the 7.27 % measured
+// above on this artifact; that discrepancy is unresolved and is not resolved by picking whichever
+// number suits a conclusion.
+//
+// One published number does argue for the feature: TensorRT-LLM PR #11434 measures MTP + selection
+// at 299.31 tok/s against 192.37 for the neural drafter alone, on DeepSeek-V3.1-NVFP4 across 8xB200
+// with a code-edit corpus, raising acceptance from 0.2704 to 0.5513. That is a third-party
+// measurement on different hardware, a different drafter and a more repetitive workload, and the
+// review notes the selector's value falls as the drafter strengthens. It is a reason to measure, not
+// a result for this product.
 //
 // Cost of the second graph family, also measured rather than estimated, and measured *before* the
 // round was written so the price was known before the purchase. On the shipped CLI at 8192 context
