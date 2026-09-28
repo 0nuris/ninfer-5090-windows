@@ -26,10 +26,27 @@
 // running for a row that has a copy is a cost the row does not need. See
 // docs/research/ngram-drafting-designs.md and docs/research/ngram-outside-github.md.
 //
-// Cost of a wide round, measured on this product (DFlash2, NVFP4 27B, 8192 context, bf16 KV, CUDA
-// graph, optimised head): 5.567 ms per round at draft window 7 against 5.886 ms at 15, so the wide
-// window costs +5.7 % and commits +28.7 % tokens per round. Non-copy rounds keep the neural width and
-// pay nothing, which is what bounds the downside.
+// Cost of a wide round: NOT YET MEASURED, and a figure that once sat here has been withdrawn.
+//
+// An earlier version of this comment recorded 5.567 ms per round at draft window 7 against 5.886 ms
+// at 15, and concluded the wide window costs +5.7 % while committing +28.7 % tokens per round. Those
+// numbers have no artifact behind them. The sweep that was meant to produce them ran eight times and
+// wrote eight zero-byte logs and a CSV containing only its header row, after which the summarising
+// step failed casting that header as data. A search of the tree and of the session's saved artifacts
+// finds the figures in exactly one place: this comment. They were recorded as a measurement and
+// repeated into a design simplification and a 288 MiB budget line. They are withdrawn.
+//
+// What *is* established here is structural rather than measured, and it is what the allowance rests
+// on: for DFlash2 the profile planner ignores the draft window entirely, assigning one topology
+// class per frontier range (graph_profiles.cpp:98-104). Width therefore does not change how many
+// topologies a family has, which is why the two widths cost the same allowance, and why adding the
+// copy window doubles it rather than scaling it. That is read from the source, not measured.
+//
+// The cost/benefit of a wide round is unmeasured and is the first thing to establish, because it
+// decides the architecture. If a wide round is a net throughput win on its own, the round should run
+// wide unconditionally and the two-layout design below is unnecessary. If acceptance falls with
+// width on real traffic, the wide round is worth paying for only on the rounds a copy fills, and the
+// second layout earns its cost. Do not size the design on either answer until it is measured.
 //
 // Cost of the second graph family, also measured rather than estimated, and measured *before* the
 // round was written so the price was known before the purchase. On the shipped CLI at 8192 context

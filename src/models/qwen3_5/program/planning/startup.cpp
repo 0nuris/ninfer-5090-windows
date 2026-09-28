@@ -851,9 +851,20 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
         } else {
             // One family per width. A copy round verifies at verify_window rather than
             // draft_window, and that is a different body, so it needs its own captured executables
-            // and its own allowance. Measured on this product: a round at draft window 15 costs
-            // +5.7 % against window 7 while committing +28.7 % tokens per round, so the second
-            // family buys a bounded cost rather than a linear one.
+            // and its own allowance. The two widths cost the same allowance rather than scaling
+            // with it, because the DFlash2 profile planner ignores the draft window and assigns one
+            // topology class per frontier range (graph_profiles.cpp:98-104); the copy window
+            // therefore doubles the per-batch sum instead of changing it. That is read from the
+            // source.
+            //
+            // What is not established is whether a second family is worth buying at all. A figure
+            // once stood here claiming a round at window 15 costs +5.7 % against window 7 while
+            // committing +28.7 % tokens per round. It is withdrawn: the sweep behind it wrote eight
+            // zero-byte logs and a header-only CSV, and the numbers appear nowhere but in the
+            // comments that repeated them. See ngram_selection.h for the full record. The charge
+            // below is correct arithmetic and is charged whenever verify_window is provisioned, but
+            // it is currently charged for a family this tree never builds -- the round runs at
+            // exactly draft_window and no wider window is reachable.
             const auto class_allowance = [&](std::uint32_t window, std::uint32_t batch_size) {
                 const auto profiles = dflash_graph_profiles(
                     impl->speculative_backend, impl->capacity, window, batch_size);
