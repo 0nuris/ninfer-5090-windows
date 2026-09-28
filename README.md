@@ -148,13 +148,13 @@ and every profile reaches the full native context.
 | Launcher | Artifact | Spec | Vision | Context | Decode | Acceptance |
 | --- | --- | --- | --- | --- | --- | --- |
 | `start_quasar_v3_dflash2_vision.bat` | QUASAR | DFlash2 (7) | yes | 262,144 | **310 tok/s** | 52.5% |
-| `start_quasar_v3_mtp4_vision.bat` | QUASAR | MTP (4) | yes | 262,144 | 228 tok/s | 63.8% |
+| `start_quasar_v3_mtp5_vision.bat` | QUASAR | MTP (5) | yes | 262,144 | **250 tok/s** | 60.5% |
 | `start_ninfer_v3_dflash2_vision.bat` | NVFP4-full | DFlash2 (7) | yes | 262,144 | **305 tok/s** | 53.8% |
 | `start_ninfer_v3_mtp5_vision.bat` | NVFP4-full | MTP (5) | yes | 262,144 | 231 tok/s | 56.8% |
 | `start_swift_v3_dflash2_vision.bat` | Swift | DFlash2 (7) | yes | 262,144 | **371 tok/s** | 67.3% |
-| `start_swift_v3_mtp5_vision.bat` | Swift | MTP (5) | yes | 262,144 | 232 tok/s | 54.2% |
+| `start_swift_v3_mtp4_vision.bat` | Swift | MTP (4) | yes | 262,144 | 242 tok/s | 66.8% |
 | `start_nvidia_v3_dflash2_vision.bat` | NVIDIA | DFlash2 (7) | yes | 262,144 | **349 tok/s** | 61.5% |
-| `start_nvidia_v3_mtp5_vision.bat` | NVIDIA | MTP (5) | yes | 262,144 | 166 tok/s | 38.2% |
+| `start_nvidia_v3_mtp4_vision.bat` | NVIDIA | MTP (4) | yes | 262,144 | 223 tok/s | 61.4% |
 
 Context ceilings are measured, not assumed. The engine refuses a profile whose minimum Engine
 runtime reservation plus its 1 GiB automatic headroom does not fit in what remains after weights, and
@@ -173,10 +173,18 @@ each choice are recorded in [ADR-0005](docs/adr/0005-per-profile-flags-are-measu
 - NVFP4-full DFlash2: **on**, but marginally, and it costs headroom, so it is the first thing to
   turn off if a profile ever refuses to start.
 
-MTP depth is chosen per artifact from measurement rather than convention: depth 4 is fastest on
-QUASAR, depth 5 on the other three. Acceptance rate does not predict throughput, because tokens
-committed per round matters more than the proportion accepted, so depth is selected on measured
-decode rate.
+MTP depth is chosen per artifact from measurement rather than convention: depth 5 on QUASAR and
+NVFP4-full, depth 4 on Swift and NVIDIA. All sixteen lane-by-depth combinations were re-measured
+2026-09-28 with the warmup transient excluded, interleaved two rounds. The previous choice -- d4 on
+QUASAR, d5 on the other three -- came from records that mixed runs with and without that transient,
+and three of the four lanes were on the wrong depth as a result; NVIDIA's was the largest, d5 reading
+228.3 against d4's 223.4 there but measuring 167.8 once the transient was excluded.
+
+Acceptance rate does not predict throughput, because tokens committed per round matters more than the
+proportion accepted, so depth is selected on measured decode rate. Depth is also not monotone in either
+direction: NVFP4-full's d4 is the slowest depth on any lane (172.8 against d5's 234.1) while accepting
+least, and NVIDIA's d4 beats its d5 on both throughput and acceptance. Neither figure can be carried
+between artifacts, which is why all four are measured.
 
 ### Two behaviours to know before relying on them
 

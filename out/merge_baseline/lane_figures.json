@@ -7,7 +7,7 @@
   "acc": "58.0%"
  },
  {
-  "file": "start_quasar_v3_mtp4_vision.bat",
+  "file": "start_quasar_v3_mtp5_vision.bat",
   "art": "qwen3_8_27b_nvfp4qat.v3.ninfer",
   "ctx": 262144,
   "tok": 221.5,
@@ -35,7 +35,7 @@
   "acc": "60.9%"
  },
  {
-  "file": "start_swift_v3_mtp5_vision.bat",
+  "file": "start_swift_v3_mtp4_vision.bat",
   "art": "qwen3_8_27b_nvfp4swift.v3.ninfer",
   "ctx": 262144,
   "tok": 231.3,
@@ -49,7 +49,7 @@
   "acc": "59.2%"
  },
  {
-  "file": "start_nvidia_v3_mtp5_vision.bat",
+  "file": "start_nvidia_v3_mtp4_vision.bat",
   "art": "qwen3_8_27b_nvfp4nvidia.v3.ninfer",
   "ctx": 262144,
   "tok": 228.3,

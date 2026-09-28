@@ -1,12 +1,12 @@
 @echo off
 REM ============================================================================
-REM  NVIDIA ModelOpt + MTP5 + Vision
+REM  QUASAR QAT + MTP5 + Vision
 REM
 REM  Measured on this machine (32 GB RTX 5090), fp8 KV at the ceiling below:
-REM      context 262,144   decode 165.7 tok/s   draft acceptance 38.2%
+REM      context 262,144   decode 250.4 tok/s   draft acceptance 60.5%
 REM      runtime 9.96 GiB   free VRAM 3.43 GiB
 REM
-REM  Depth 5 measured fastest of 2-5 here as on the other NVIDIA-sourced lines.
+REM  Depth 5 measured fastest of 2-5 on QUASAR, reversing the depth-4 choice the 2026-09-17 records supported. Those records mix two populations, with and without the warmup transient, and QUASAR's d4/d5 gap was 3.4% -- inside what that contamination could reorder. Re-measured 2026-09-28 with the transient excluded, interleaved two rounds: d5 250.4 against d4 231.4.
 REM
 REM  Requires the FFmpeg runtime DLLs beside the executable (staged by
 REM  build_windows.bat). This launcher checks for them and refuses with a readable
@@ -36,8 +36,8 @@ REM too. An absolute path here bakes one machine's checkout into a file that shi
 REM made the generated launchers unverifiable anywhere else.
 set "SERVE=%~dp0ninfer-serve.exe"
 if not exist "%SERVE%" set "SERVE=%~dp0build\apps\ninfer-serve.exe"
-set "MODEL=%~dp0models\qwen3_8_27b_nvfp4nvidia.v3.ninfer"
-if not exist "%MODEL%" set "MODEL=C:\AI\models\qwen3_8_27b_nvfp4nvidia.v3.ninfer"
+set "MODEL=%~dp0models\qwen3_8_27b_nvfp4qat.v3.ninfer"
+if not exist "%MODEL%" set "MODEL=C:\AI\models\qwen3_8_27b_nvfp4qat.v3.ninfer"
 REM The lane's template travels with the archive; the source-tree copy is the fallback. Passing it
 REM explicitly stops the lane inheriting whichever template its artifact embeds -- the two shipped
 REM artifacts embed different ones, and the embedded pair predate the reasoning-effort alias mapping.
@@ -56,8 +56,8 @@ if not exist "%SERVE%" (
 )
 if not exist "%MODEL%" (
     echo [ERROR] Artifact not found.
-    echo         Expected models\qwen3_8_27b_nvfp4nvidia.v3.ninfer beside this launcher,
-    echo         or C:\AI\models\qwen3_8_27b_nvfp4nvidia.v3.ninfer
+    echo         Expected models\qwen3_8_27b_nvfp4qat.v3.ninfer beside this launcher,
+    echo         or C:\AI\models\qwen3_8_27b_nvfp4qat.v3.ninfer
     echo         Run download_model.bat to fetch it.
     pause
     exit /b 1
@@ -113,12 +113,12 @@ for %%D in (avcodec avformat avutil swscale swresample) do (
     )
 )
 
-netstat -ano | findstr ":8093" | findstr /I "LISTENING" >nul 2>&1
+netstat -ano | findstr ":8087" | findstr /I "LISTENING" >nul 2>&1
 if not errorlevel 1 (
-    echo [ERROR] Port 8093 is already in use.
+    echo [ERROR] Port 8087 is already in use.
     echo         Something is already listening there. Stop it, or change the --port flag
     echo         in this launcher. To see what holds it:
-    echo             netstat -ano ^| findstr ":8093"
+    echo             netstat -ano ^| findstr ":8087"
     pause
     exit /b 1
 )
@@ -138,8 +138,8 @@ if not errorlevel 1 (
   --draft-tokens 5 ^
   --lm-head-draft ^
   --host 127.0.0.1 ^
-  --port 8093 ^
-  --model-id qwen3.8-27b-nvidia-v3-mtp5-vision ^
+  --port 8087 ^
+  --model-id qwen3.8-27b-quasar-v3-mtp5-vision ^
   --max-context 262144 ^
   --device-state-slots 1 ^
   --kv-capacity auto ^

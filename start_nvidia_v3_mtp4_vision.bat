@@ -1,12 +1,12 @@
 @echo off
 REM ============================================================================
-REM  Swift + MTP5 + Vision
+REM  NVIDIA ModelOpt + MTP4 + Vision
 REM
 REM  Measured on this machine (32 GB RTX 5090), fp8 KV at the ceiling below:
-REM      context 262,144   decode 232.3 tok/s   draft acceptance 54.2%
+REM      context 262,144   decode 223.4 tok/s   draft acceptance 61.4%
 REM      runtime 9.96 GiB   free VRAM 3.43 GiB
 REM
-REM  Depth 5 measured fastest of 2-5 on Swift, as on NVFP4-full, with 3.16 GiB free at the full native context. Re-measured 2026-09-24; acceptance reproduced exactly.
+REM  Depth 4 measured fastest of 2-5 here, and the largest correction in the table: d5 read 228.3 on the 2026-09-17 records, which the warmup transient accounts for almost entirely, and measures 167.8 with it excluded. Depth 4 against depth 5 is 223.4 against 167.8, +33%, and d4 also accepts 61.4% against 38.2% -- the one lane where acceptance and throughput agree, which is why the contaminated figure looked plausible. Re-measured 2026-09-28, interleaved two rounds.
 REM
 REM  Requires the FFmpeg runtime DLLs beside the executable (staged by
 REM  build_windows.bat). This launcher checks for them and refuses with a readable
@@ -36,8 +36,8 @@ REM too. An absolute path here bakes one machine's checkout into a file that shi
 REM made the generated launchers unverifiable anywhere else.
 set "SERVE=%~dp0ninfer-serve.exe"
 if not exist "%SERVE%" set "SERVE=%~dp0build\apps\ninfer-serve.exe"
-set "MODEL=%~dp0models\qwen3_8_27b_nvfp4swift.v3.ninfer"
-if not exist "%MODEL%" set "MODEL=C:\AI\models\qwen3_8_27b_nvfp4swift.v3.ninfer"
+set "MODEL=%~dp0models\qwen3_8_27b_nvfp4nvidia.v3.ninfer"
+if not exist "%MODEL%" set "MODEL=C:\AI\models\qwen3_8_27b_nvfp4nvidia.v3.ninfer"
 REM The lane's template travels with the archive; the source-tree copy is the fallback. Passing it
 REM explicitly stops the lane inheriting whichever template its artifact embeds -- the two shipped
 REM artifacts embed different ones, and the embedded pair predate the reasoning-effort alias mapping.
@@ -56,8 +56,8 @@ if not exist "%SERVE%" (
 )
 if not exist "%MODEL%" (
     echo [ERROR] Artifact not found.
-    echo         Expected models\qwen3_8_27b_nvfp4swift.v3.ninfer beside this launcher,
-    echo         or C:\AI\models\qwen3_8_27b_nvfp4swift.v3.ninfer
+    echo         Expected models\qwen3_8_27b_nvfp4nvidia.v3.ninfer beside this launcher,
+    echo         or C:\AI\models\qwen3_8_27b_nvfp4nvidia.v3.ninfer
     echo         Run download_model.bat to fetch it.
     pause
     exit /b 1
@@ -113,12 +113,12 @@ for %%D in (avcodec avformat avutil swscale swresample) do (
     )
 )
 
-netstat -ano | findstr ":8091" | findstr /I "LISTENING" >nul 2>&1
+netstat -ano | findstr ":8093" | findstr /I "LISTENING" >nul 2>&1
 if not errorlevel 1 (
-    echo [ERROR] Port 8091 is already in use.
+    echo [ERROR] Port 8093 is already in use.
     echo         Something is already listening there. Stop it, or change the --port flag
     echo         in this launcher. To see what holds it:
-    echo             netstat -ano ^| findstr ":8091"
+    echo             netstat -ano ^| findstr ":8093"
     pause
     exit /b 1
 )
@@ -135,11 +135,11 @@ if not errorlevel 1 (
 "%SERVE%" "%MODEL%" ^
   --vision ^
   --spec mtp ^
-  --draft-tokens 5 ^
+  --draft-tokens 4 ^
   --lm-head-draft ^
   --host 127.0.0.1 ^
-  --port 8091 ^
-  --model-id qwen3.8-27b-swift-v3-mtp5-vision ^
+  --port 8093 ^
+  --model-id qwen3.8-27b-nvidia-v3-mtp4-vision ^
   --max-context 262144 ^
   --device-state-slots 1 ^
   --kv-capacity auto ^
