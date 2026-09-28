@@ -127,10 +127,19 @@ Two build notes specific to Windows:
 ### Profiles and launchers
 
 Eight launchers ship for the RTX 5090, one per measured-optimal profile. Every number below was
-measured on this machine with the exact argument set the launcher uses, and re-measured 2026-09-24 on
-the artifacts this release ships. Absolute decode varies by up to ~9% between sessions on a card whose
-clocks are not pinned, so compare lanes to each other and expect your own absolute figures to differ;
-acceptance is stable across sessions, which is why it is the column to trust in a comparison. All four
+measured on this machine with the exact argument set the launcher uses, in one interleaved window of
+three rounds on 2026-09-28 against the artifacts this release ships. Absolute decode varies by up to
+~9% *between* sessions on a card whose clocks are not pinned, so compare lanes to each other and
+expect your own absolute figures to differ; within one interleaved window the same lane repeats to
+1.5% or less. Acceptance is the column to trust in a comparison.
+
+The earlier revision of this table was measured with a harness defect: the first full-length decode
+after a server start is a transient that returns faster than every later identical request and
+different, shorter text, and the 16-token warmup did not reach the state it affects, so that request
+was averaged into the figures. On the NVIDIA MTP5 lane it read 261.7 tok/s against 169.8 for requests
+two onward, which is most of the difference between that row's old 228 tok/s and its measured 166.
+The harness now discards a full-length warmup, and its acceptance denominator excludes the same
+request. No lane, flag, context or draft depth changed. All four
 artifacts are vision-only here because Vision measured free on every one of them at 262,144; the
 with/without comparison is recorded in
 [ADR-0004](docs/adr/0004-vision-only-and-third-party-artifact.md). No degraded text-only variant ships,
@@ -138,14 +147,14 @@ and every profile reaches the full native context.
 
 | Launcher | Artifact | Spec | Vision | Context | Decode | Acceptance |
 | --- | --- | --- | --- | --- | --- | --- |
-| `start_quasar_v3_dflash2_vision.bat` | QUASAR | DFlash2 (7) | yes | 262,144 | **311 tok/s** | 58.0% |
-| `start_quasar_v3_mtp4_vision.bat` | QUASAR | MTP (4) | yes | 262,144 | 222 tok/s | 66.9% |
-| `start_ninfer_v3_dflash2_vision.bat` | NVFP4-full | DFlash2 (7) | yes | 262,144 | **340 tok/s** | 68.8% |
-| `start_ninfer_v3_mtp5_vision.bat` | NVFP4-full | MTP (5) | yes | 262,144 | 234 tok/s | 61.7% |
-| `start_swift_v3_dflash2_vision.bat` | Swift | DFlash2 (7) | yes | 262,144 | **321 tok/s** | 60.9% |
-| `start_swift_v3_mtp5_vision.bat` | Swift | MTP (5) | yes | 262,144 | 231 tok/s | 58.6% |
-| `start_nvidia_v3_dflash2_vision.bat` | NVIDIA | DFlash2 (7) | yes | 262,144 | **322 tok/s** | 59.2% |
-| `start_nvidia_v3_mtp5_vision.bat` | NVIDIA | MTP (5) | yes | 262,144 | 228 tok/s | 56.4% |
+| `start_quasar_v3_dflash2_vision.bat` | QUASAR | DFlash2 (7) | yes | 262,144 | **310 tok/s** | 52.5% |
+| `start_quasar_v3_mtp4_vision.bat` | QUASAR | MTP (4) | yes | 262,144 | 228 tok/s | 63.8% |
+| `start_ninfer_v3_dflash2_vision.bat` | NVFP4-full | DFlash2 (7) | yes | 262,144 | **305 tok/s** | 53.8% |
+| `start_ninfer_v3_mtp5_vision.bat` | NVFP4-full | MTP (5) | yes | 262,144 | 231 tok/s | 56.8% |
+| `start_swift_v3_dflash2_vision.bat` | Swift | DFlash2 (7) | yes | 262,144 | **371 tok/s** | 67.3% |
+| `start_swift_v3_mtp5_vision.bat` | Swift | MTP (5) | yes | 262,144 | 232 tok/s | 54.2% |
+| `start_nvidia_v3_dflash2_vision.bat` | NVIDIA | DFlash2 (7) | yes | 262,144 | **349 tok/s** | 61.5% |
+| `start_nvidia_v3_mtp5_vision.bat` | NVIDIA | MTP (5) | yes | 262,144 | 166 tok/s | 38.2% |
 
 Context ceilings are measured, not assumed. The engine refuses a profile whose minimum Engine
 runtime reservation plus its 1 GiB automatic headroom does not fit in what remains after weights, and

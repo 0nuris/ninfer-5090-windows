@@ -121,14 +121,14 @@ that earlier builds shipped.
 
 | Launcher | Artifact | Spec | Vision | Context | Decode | Draft accept |
 | --- | --- | --- | --- | --- | --- | --- |
-| `start_quasar_v3_dflash2_vision.bat` | QUASAR QAT | DFlash2 (7) | yes | 262,144 | **311 tok/s** | 58.0% |
-| `start_quasar_v3_mtp4_vision.bat` | QUASAR QAT | MTP (4) | yes | 262,144 | 222 tok/s | 66.9% |
-| `start_ninfer_v3_dflash2_vision.bat` | NVFP4-full | DFlash2 (7) | yes | 262,144 | **340 tok/s** | 68.8% |
-| `start_ninfer_v3_mtp5_vision.bat` | NVFP4-full | MTP (5) | yes | 262,144 | 234 tok/s | 61.7% |
-| `start_swift_v3_dflash2_vision.bat` | Swift | DFlash2 (7) | yes | 262,144 | **321 tok/s** | 60.9% |
-| `start_swift_v3_mtp5_vision.bat` | Swift | MTP (5) | yes | 262,144 | 231 tok/s | 58.6% |
-| `start_nvidia_v3_dflash2_vision.bat` | NVIDIA | DFlash2 (7) | yes | 262,144 | **322 tok/s** | 59.2% |
-| `start_nvidia_v3_mtp5_vision.bat` | NVIDIA | MTP (5) | yes | 262,144 | 228 tok/s | 56.4% |
+| `start_quasar_v3_dflash2_vision.bat` | QUASAR QAT | DFlash2 (7) | yes | 262,144 | **310 tok/s** | 52.5% |
+| `start_quasar_v3_mtp4_vision.bat` | QUASAR QAT | MTP (4) | yes | 262,144 | 228 tok/s | 63.8% |
+| `start_ninfer_v3_dflash2_vision.bat` | NVFP4-full | DFlash2 (7) | yes | 262,144 | **305 tok/s** | 53.8% |
+| `start_ninfer_v3_mtp5_vision.bat` | NVFP4-full | MTP (5) | yes | 262,144 | 231 tok/s | 56.8% |
+| `start_swift_v3_dflash2_vision.bat` | Swift | DFlash2 (7) | yes | 262,144 | **371 tok/s** | 67.3% |
+| `start_swift_v3_mtp5_vision.bat` | Swift | MTP (5) | yes | 262,144 | 232 tok/s | 54.2% |
+| `start_nvidia_v3_dflash2_vision.bat` | NVIDIA | DFlash2 (7) | yes | 262,144 | **349 tok/s** | 61.5% |
+| `start_nvidia_v3_mtp5_vision.bat` | NVIDIA | MTP (5) | yes | 262,144 | 166 tok/s | 38.2% |
 
 Every number was measured on an RTX 5090 with the exact arguments the launcher passes, and re-measured
 2026-09-24 on the artifacts this release ships; every context ceiling is the highest value the engine

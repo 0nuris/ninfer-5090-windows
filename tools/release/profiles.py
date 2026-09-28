@@ -5,17 +5,30 @@ A **profile** is one shippable combination of artifact, spec route, vision and c
 module holds the table and the serve argument list, so the launcher generator, the measurement
 harnesses and the verifier all describe the same thing instead of restating it.
 
-Measured 2026-09-20 on an RTX 5090 (32 GB) through the shipped launcher's own flag set: the
+Measured 2026-09-28 on an RTX 5090 (32 GB) through the shipped launcher's own flag set: the
 `profile` mode of v3_profile_matrix.py, which composes profiles.ordered_flags. Each value therefore
 describes the configuration a launcher actually starts, including its --device-state-slots. An
 earlier probe omitted that flag and published a runtime/free pair for a configuration no launcher
 starts.
 
-The four values come from ONE interleaved window, three rounds in lane order (quasar dflash2, quasar
-mtp4, nvfp4-full dflash2, nvfp4-full mtp5). Interleaving is not optional here: this machine's decode
-varies by up to ~9% between windows, and both an earlier "state slots cost 14% of decode" and an
-earlier "the fused artifact is 9% faster" were time-ordered comparisons -- they measured the window,
-not the variable. Compare alternatives by alternating them; never measure one, then the other.
+The eight values come from ONE interleaved window, three rounds, each round visiting all eight lanes
+in a rotated order so every lane held a different position. Interleaving is not optional here: this
+machine's decode varies by up to ~9% between windows, and both an earlier "state slots cost 14% of
+decode" and an earlier "the fused artifact is 9% faster" were time-ordered comparisons -- they
+measured the window, not the variable. Compare alternatives by alternating them; never measure one,
+then the other. With the harness corrected (below), every lane's three rounds span 1.5% or less, each
+returns one digest across all three, and no position effect: position 0 and position 7 read the same.
+
+**The harness used to measure its own warmup.** The first full-length decode after a server start is a
+transient: it returns faster than every later identical request, and different and shorter text, while
+requests 2..n are byte-identical. On the NVIDIA MTP5 lane it read 261.7 tok/s against 169.8 for
+requests 2-7, so averaging it into three runs published ~200 tok/s for a lane that delivers ~166 --
+and that inflated figure is the one this table used to carry. A 16-token probe does not reach the
+state the transient affects, so `measure_decode` now discards one full-length warmup and
+`parse_spec_jsonl` skips it, because the engine appends to its request log for the whole session. That
+harness fix, not a change in the lanes, is the whole difference between the 2026-09-20 numbers and
+these. Every acceptance figure moved for the same reason: the transient request was in the
+denominator and the numerator.
 
 --device-state-slots is 1 for every profile, from a record: the reclaim that landed 2026-09-19
 removed the #251 cliff, so all twelve conversations reuse at 1 as well as at 8 (`slots_sweep_*.txt`
@@ -23,7 +36,8 @@ under the bench records). Interleaved against 8, the value 1 costs 1.3 GiB less 
 acceptance (62.5% against 58.6%) at the same decode. A larger value buys retained-state capacity for
 interleaved conversations, which nothing in this repo measures -- treat raising it as an unverified
 trade, not as a fix.
-Decode varies ~10% run to run and free VRAM ~0.2 GiB with whatever else holds the card.
+Decode varies ~10% between windows, and free VRAM ~0.2 GiB with whatever else holds the card. Within
+one interleaved window, with the warmup transient excluded, it varies 1.5% or less.
 Every value below is backed by a record in matrix_v3.jsonl under the launcher's own file name, and
 every value is measured on the **published** artifact -- the one `download_model.py`'s pin resolves
 to, hash-verified. A locally-upgraded copy is not a substitute: it binds the DFlash2 draft attention
@@ -69,7 +83,7 @@ PROFILES: list[dict[str, Any]] = [
     dict(file="start_quasar_v3_dflash2_vision.bat", port=8086, art=QUASAR, device_state_slots=1,
          label="QUASAR QAT + DFlash2 + Vision", model_id="qwen3.8-27b-quasar-v3-dflash2-vision",
          spec="dflash2", draft=7, vision=True, lm_head=True, ctx=262144,
-         tok=311.1, acc="58.0%", runtime="10.7 GiB", free="2.36 GiB",
+         tok=310.3, acc="52.5%", runtime="10.3 GiB", free="2.87 GiB",
          note="Fastest QUASAR lane at full context, at one state slot. Re-measured 2026-09-24 on "
               "the artifact this port builds, which is what the launcher runs; the recorded "
               "343.4/62.5% was taken 2026-09-17 and does not reproduce, the published file this "
@@ -77,26 +91,26 @@ PROFILES: list[dict[str, Any]] = [
     dict(file="start_quasar_v3_mtp4_vision.bat", port=8087, art=QUASAR, device_state_slots=1,
          label="QUASAR QAT + MTP4 + Vision", model_id="qwen3.8-27b-quasar-v3-mtp4-vision",
          spec="mtp", draft=4, vision=True, lm_head=True, ctx=262144,
-         tok=221.5, acc="66.9%", runtime="10.4 GiB", free="2.99 GiB",
+         tok=228.0, acc="63.8%", runtime="9.96 GiB", free="3.43 GiB",
          note="Lower-VRAM QUASAR profile. MTP depth 4 measured fastest of 2-5 on QUASAR, "
               "re-measured 2026-09-24 on this port's build."),
     dict(file="start_ninfer_v3_dflash2_vision.bat", port=8088, art=NVFP4FULL, device_state_slots=1,
          label="NVFP4-full + DFlash2 + Vision", model_id="qwen3.8-27b-nvfp4-v3-dflash2-vision",
          spec="dflash2", draft=7, vision=True, lm_head=True, ctx=262144,
-         tok=340.4, acc="68.8%", runtime="10.7 GiB", free="1.66 GiB",
+         tok=304.6, acc="53.8%", runtime="10.3 GiB", free="2.16 GiB",
          note="Second artifact, same reach as QUASAR: 262,144 with Vision, at one state slot. "
               "Re-measured 2026-09-24 on this port's own build of the line; the recorded 344.6/63.7% "
               "was taken 2026-09-17 on the published file, which measures 49.4% on that lane."),
     dict(file="start_ninfer_v3_mtp5_vision.bat", port=8089, art=NVFP4FULL, device_state_slots=1,
          label="NVFP4-full + MTP5 + Vision", model_id="qwen3.8-27b-nvfp4-v3-mtp5-vision",
          spec="mtp", draft=5, vision=True, lm_head=True, ctx=262144,
-         tok=233.7, acc="61.7%", runtime="10.4 GiB", free="2.39 GiB",
+         tok=231.2, acc="56.8%", runtime="9.96 GiB", free="3.01 GiB",
          note="MTP lane on the second artifact. Depth 5 measured fastest of 2-5 here, re-measured "
               "2026-09-24 on this port's build."),
     dict(file="start_swift_v3_dflash2_vision.bat", port=8090, art=SWIFT, device_state_slots=1,
          label="Swift + DFlash2 + Vision", model_id="qwen3.8-27b-swift-v3-dflash2-vision",
          spec="dflash2", draft=7, vision=True, lm_head=True, ctx=262144,
-         tok=321.2, acc="60.9%", runtime="10.7 GiB", free="1.63 GiB",
+         tok=370.9, acc="67.3%", runtime="10.3 GiB", free="2.09 GiB",
          note="Swift's fastest lane, and the one re-encoding helped most: acceptance is 60.9% "
               "against 45.5% while the FP8 attention was imported, because the z-lab draft was "
               "trained on the stock model's hidden states. Encoding that draft NVFP4 as the other "
@@ -105,13 +119,13 @@ PROFILES: list[dict[str, Any]] = [
     dict(file="start_swift_v3_mtp5_vision.bat", port=8091, art=SWIFT, device_state_slots=1,
          label="Swift + MTP5 + Vision", model_id="qwen3.8-27b-swift-v3-mtp5-vision",
          spec="mtp", draft=5, vision=True, lm_head=True, ctx=262144,
-         tok=231.3, acc="58.6%", runtime="10.4 GiB", free="3.16 GiB",
+         tok=232.3, acc="54.2%", runtime="9.96 GiB", free="3.43 GiB",
          note="Depth 5 measured fastest of 2-5 on Swift, as on NVFP4-full, with 3.16 GiB free at "
               "the full native context. Re-measured 2026-09-24; acceptance reproduced exactly."),
     dict(file="start_nvidia_v3_dflash2_vision.bat", port=8092, art=NVIDIA, device_state_slots=1,
          label="NVIDIA ModelOpt + DFlash2 + Vision", model_id="qwen3.8-27b-nvidia-v3-dflash2-vision",
          spec="dflash2", draft=7, vision=True, lm_head=True, ctx=262144,
-         tok=322.4, acc="59.2%", runtime="10.7 GiB", free="2.45 GiB",
+         tok=349.2, acc="61.5%", runtime="10.3 GiB", free="2.88 GiB",
          note="NVIDIA's ModelOpt quantization of the base model, built by this port: its NVFP4 MLP "
               "imported on all 64 layers and its FP8 attention re-encoded from the BF16 base. Same "
               "full-corpus perplexity as the official stock at 20% smaller, with no FP8 tensor where "
@@ -119,7 +133,7 @@ PROFILES: list[dict[str, Any]] = [
     dict(file="start_nvidia_v3_mtp5_vision.bat", port=8093, art=NVIDIA, device_state_slots=1,
          label="NVIDIA ModelOpt + MTP5 + Vision", model_id="qwen3.8-27b-nvidia-v3-mtp5-vision",
          spec="mtp", draft=5, vision=True, lm_head=True, ctx=262144,
-         tok=228.3, acc="56.4%", runtime="10.4 GiB", free="2.99 GiB",
+         tok=165.7, acc="38.2%", runtime="9.96 GiB", free="3.43 GiB",
          note="Depth 5 measured fastest of 2-5 here as on the other NVIDIA-sourced lines."),
 ]
 

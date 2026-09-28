@@ -3,8 +3,8 @@ REM ============================================================================
 REM  NVIDIA ModelOpt + MTP5 + Vision
 REM
 REM  Measured on this machine (32 GB RTX 5090), fp8 KV at the ceiling below:
-REM      context 262,144   decode 228.3 tok/s   draft acceptance 56.4%
-REM      runtime 10.4 GiB   free VRAM 2.99 GiB
+REM      context 262,144   decode 165.7 tok/s   draft acceptance 38.2%
+REM      runtime 9.96 GiB   free VRAM 3.43 GiB
 REM
 REM  Depth 5 measured fastest of 2-5 here as on the other NVIDIA-sourced lines.
 REM

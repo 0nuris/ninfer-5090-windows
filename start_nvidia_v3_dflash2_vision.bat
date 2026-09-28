@@ -3,8 +3,8 @@ REM ============================================================================
 REM  NVIDIA ModelOpt + DFlash2 + Vision
 REM
 REM  Measured on this machine (32 GB RTX 5090), fp8 KV at the ceiling below:
-REM      context 262,144   decode 322.4 tok/s   draft acceptance 59.2%
-REM      runtime 10.7 GiB   free VRAM 2.45 GiB
+REM      context 262,144   decode 349.2 tok/s   draft acceptance 61.5%
+REM      runtime 10.3 GiB   free VRAM 2.88 GiB
 REM
 REM  NVIDIA's ModelOpt quantization of the base model, built by this port: its NVFP4 MLP imported on all 64 layers and its FP8 attention re-encoded from the BF16 base. Same full-corpus perplexity as the official stock at 20% smaller, with no FP8 tensor where that has 146, and this lane reaches the full context where it caps below.
 REM

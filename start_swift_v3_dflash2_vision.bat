@@ -3,8 +3,8 @@ REM ============================================================================
 REM  Swift + DFlash2 + Vision
 REM
 REM  Measured on this machine (32 GB RTX 5090), fp8 KV at the ceiling below:
-REM      context 262,144   decode 321.2 tok/s   draft acceptance 60.9%
-REM      runtime 10.7 GiB   free VRAM 1.63 GiB
+REM      context 262,144   decode 370.9 tok/s   draft acceptance 67.3%
+REM      runtime 10.3 GiB   free VRAM 2.09 GiB
 REM
 REM  Swift's fastest lane, and the one re-encoding helped most: acceptance is 60.9% against 45.5% while the FP8 attention was imported, because the z-lab draft was trained on the stock model's hidden states. Encoding that draft NVFP4 as the other lines do measured worse here (57.7%), so it stays Q8. Re-measured 2026-09-24, reproducing the 60.9% exactly.
 REM

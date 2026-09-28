@@ -94,15 +94,35 @@ healthy Recall@16 with collapsing path acceptance (selector); Recall@16 itself c
 position 1 (backbone or conditioning); or Recall@1 low at position 1 (head or conditioning weak from
 the first column).
 
-### 6. Interleaved re-measurement of all eight profiles
-**Why:** the published table is wrong on our own numbers. `start_ninfer_v3_dflash2_vision` records
-340.4 tok/s / 68.8% and measured 291.0 / 53.4% — off by 14.5% and 15.4 points.
-`start_nvidia_v3_mtp5_vision` measured `[254.9, 167.7, 168.6]`, a **52% spread inside one profile**,
-which is not a measurement at all; something else was on the card.
-**Done when:** every row is re-measured by alternating lanes rather than sequentially, and
-`tools/release/profiles.py` carries numbers that reproduce. `profiles.py`'s own docstring is explicit
-that interleaving is not optional on this machine, because decode drifts up to ~9% between windows and
-two earlier "improvements" were really that drift.
+### 6. Interleaved re-measurement of all eight profiles - **DONE 2026-09-28**
+All eight re-measured in one interleaved window, three rounds, each round visiting every lane in a
+rotated order. Every lane's three rounds span **1.5 % or less**, each returns **one digest** across all
+three, and there is **no position effect** — position 0 and position 7 read the same. `profiles.py`,
+both doc tables and the eight launchers' `REM` lines now carry the new figures.
+
+**The cause was a harness defect, not the lanes, and not a contaminated card.** The 52 % spread that
+invalidated the NVIDIA MTP5 row was reproducible to within 1 % across four independent server starts,
+which is the opposite of contamination. The first full-length decode after a start is a transient: it
+returns faster than every later identical request and **different, shorter text**, while requests 2..n
+are byte-identical. On that lane it read 261.7 tok/s against 169.8 for requests 2-7. `measure_decode`
+warmed up with a **16-token probe**, which does not reach the state the transient affects, so the
+transient was averaged into the first measured run. Acceptance was contaminated the same way, and
+because the transient accepts *better* (64.6 % against 32.7 %) it inflated that column too: the same
+log reads 35.3 % over all records and 32.7 % without the first.
+
+Fixed by discarding one full-length warmup, and by skipping it in `parse_spec_jsonl` because the engine
+appends to its request log for the whole session. Both are in this commit. An earlier revision of the
+table was **inflated on all eight lanes** — the largest correction is NVIDIA MTP5 at 228.3 → 165.7
+tok/s and 56.4 % → 38.2 %, which is the row that was already suspected.
+
+**What was not changed:** no lane, flag, context, draft depth or artifact. Only the four measured
+fields moved in `profiles.py`, and the launchers were regenerated rather than hand-edited.
+
+**Still open, and it is a real one:** the transient is a genuine first-request behaviour, not a
+measurement artefact — a client's *first* request after a lane starts gets different, shorter text
+from the same seed. It is invisible at temperature 0 (the greedy digest is stable from request 1) and
+visible at the sampling temperature the bench uses. That is a serving behaviour question, not a
+benchmark one, and it is not diagnosed.
 
 ### 7. k8v4 KV against the shipped fp8
 **Why:** every profile ships `--kv-dtype fp8`. K8V4 is available as a third option behind one flag.

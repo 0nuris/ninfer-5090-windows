@@ -124,6 +124,7 @@ def ceiling_of(art: str, spec: str, vision: bool, lm_head: bool) -> int:
             or CEILINGS.get((art, spec, vision, True))
             or 131072)
 
+DECODE_TOKENS = 400
 CODE_PROMPT = (
     "Write a Python module with: a dataclass Point(x, y), a function distance(a, b) "
     "returning Euclidean distance, and a function closest_pair(points) returning the two "
@@ -199,19 +200,28 @@ def run_once_gen(prompt: str, max_tokens: int, sampling: str = "default") -> tup
 
 
 def measure_decode(runs: int = 3, jsonl: Path | None = None, greedy: bool = False) -> dict:
-    """One warmup, `runs` realistic decode runs, then one deterministic pass.
+    """A probe, one discarded full-length warmup, `runs` realistic decode runs, one deterministic pass.
 
     Acceptance is taken only from the realistic runs: the deterministic pass uses
     temperature 0, which inflates draft acceptance and would flatter every depth
     equally. The digest comes from that deterministic pass and is what proves spec
     decoding is output-preserving across depths.
+
+    The discarded warmup is not optional. The first full-length decode after a server start is a
+    transient: it returns faster than every later identical request and different, shorter text,
+    while requests 2..n are byte-identical. Measured on the NVIDIA MTP5 lane it reads 261.7 tok/s
+    against 169.8 for requests 2-7, so averaging it into three runs reported ~200 tok/s for a lane
+    that delivers ~170, and the profile matrix recorded that inflated figure. The transient needs a
+    full-length decode to clear it -- a 16-token probe does not reach the state it affects, which is
+    why the probe below is not sufficient on its own.
     """
     ct, dt, _ = run_once_gen(PROBE_PROMPT, 16, "default")
     warmup = ct / dt if dt else 0.0
+    run_once_gen(CODE_PROMPT, DECODE_TOKENS, "default")
 
     rates = []
     for _ in range(runs):
-        ct, dt, _ = run_once_gen(CODE_PROMPT, 400, "default")
+        ct, dt, _ = run_once_gen(CODE_PROMPT, DECODE_TOKENS, "default")
         rates.append(ct / dt if dt else 0.0)
 
     out = {
@@ -221,7 +231,9 @@ def measure_decode(runs: int = 3, jsonl: Path | None = None, greedy: bool = Fals
     }
 
     if jsonl is not None:
-        out.update(parse_spec_jsonl(jsonl))
+        # The 16-token probe emits no speculative record, so the discarded full-length warmup is
+        # the only leading request record in the log.
+        out.update(parse_spec_jsonl(jsonl, skip=1))
 
     _, _, text = run_once_gen(CODE_PROMPT, 400, "none" if greedy else "zero")
     out["digest"] = hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -274,15 +286,20 @@ def parse_spec(text: str) -> list[str]:
     return hits[-8:]
 
 
-def parse_spec_jsonl(path: Path) -> dict:
+def parse_spec_jsonl(path: Path, skip: int = 0) -> dict:
     """Aggregate speculative and decode counters from the request log.
 
     Accepted/drafted is the acceptance rate behind the throughput number: a depth can
     raise decode tok/s while lowering acceptance, and only the ratio shows which.
+
+    `skip` drops that many leading request records. The engine appends to its log for the whole
+    session, so the requests a caller warms up with are in the file alongside the measured ones; a
+    warmup that exists to absorb a startup transient would otherwise contribute its acceptance to
+    the figure the transient is meant to be excluded from.
     """
     if not path.exists():
         return {}
-    acc = dra = rnd = fallback = gens = 0
+    acc = dra = rnd = fallback = gens = seen = 0
     backend = window = ""
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         if not line.strip():
@@ -293,6 +310,9 @@ def parse_spec_jsonl(path: Path) -> dict:
             continue
         sp = rec.get("speculative")
         if not sp:
+            continue
+        seen += 1
+        if seen <= skip:
             continue
         acc += sp.get("accepted_tokens", 0)
         dra += sp.get("drafted_tokens", 0)

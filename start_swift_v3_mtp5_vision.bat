@@ -3,8 +3,8 @@ REM ============================================================================
 REM  Swift + MTP5 + Vision
 REM
 REM  Measured on this machine (32 GB RTX 5090), fp8 KV at the ceiling below:
-REM      context 262,144   decode 231.3 tok/s   draft acceptance 58.6%
-REM      runtime 10.4 GiB   free VRAM 3.16 GiB
+REM      context 262,144   decode 232.3 tok/s   draft acceptance 54.2%
+REM      runtime 9.96 GiB   free VRAM 3.43 GiB
 REM
 REM  Depth 5 measured fastest of 2-5 on Swift, as on NVFP4-full, with 3.16 GiB free at the full native context. Re-measured 2026-09-24; acceptance reproduced exactly.
 REM
