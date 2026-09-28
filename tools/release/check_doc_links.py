@@ -82,9 +82,31 @@ def targets(text: str):
             yield number, reference.group(1)
 
 
+# A fenced block opens and closes on its own line, indented by at most three spaces. The character
+# is recorded so a ``` inside a ~~~ block is content rather than a closer.
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+
 def code_paths(text: str):
-    """Yield (line number, path) for every backticked token that names a repository file."""
+    """Yield (line number, path) for every backticked token that names a repository file.
+
+    Fenced code blocks are skipped. What they hold is commands, sample output and diffs, where a
+    backticked path is a literal to read rather than a reference to resolve: an example that names
+    a file which exists only on the author's machine is not a broken link, and checking it would
+    make the checker reject correct documentation.
+    """
+    fence: str | None = None
     for number, line in enumerate(text.splitlines(), start=1):
+        marker = FENCE.match(line)
+        if marker:
+            character = marker.group(1)[0]
+            if fence is None:
+                fence = character
+            elif character == fence:
+                fence = None
+            continue
+        if fence is not None:
+            continue
         for match in CODE_PATH.finditer(line):
             yield number, match.group(1)
 

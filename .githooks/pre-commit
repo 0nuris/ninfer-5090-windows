@@ -49,7 +49,9 @@ gate() {
 gate "documentation links" "$PY" tools/release/check_doc_links.py
 gate "profile consistency" "$PY" tools/release/check_profile_consistency.py
 echo "pre-commit: converter tests"
-"$PY" -m pytest tests/convert -q
+# The doc-link test is named explicitly: tests/release also holds a ctest script that exits at import,
+# so collecting the directory would abort the run instead of adding to it.
+"$PY" -m pytest tests/convert tests/release/test_doc_links.py -q
 echo "pre-commit: ruff"
 "$PY" -m ruff check tools tests --quiet
 echo "pre-commit: mypy"
