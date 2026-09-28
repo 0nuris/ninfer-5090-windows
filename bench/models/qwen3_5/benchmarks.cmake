@@ -14,6 +14,15 @@ ninfer_internal_includes(ninfer_qwen3_5_dflash_round_bench)
 target_link_libraries(ninfer_qwen3_5_dflash_round_bench PRIVATE
   ninfer_engine ninfer_model_runtime ninfer_core)
 
+# Token-exact per-token log probabilities for a supplied id file. It exists because the perplexity
+# tool's --text front door re-tokenises, and re-tokenising decoded text does not reproduce the ids
+# that produced it, so an index-aligned comparison between two decoding routes silently reads the
+# wrong position. Engine::score_tokens takes ids directly; this is that path with a file front door.
+add_executable(ninfer_score_token_logprobs
+  "${CMAKE_CURRENT_LIST_DIR}/score_token_logprobs.cpp")
+ninfer_internal_includes(ninfer_score_token_logprobs)
+target_link_libraries(ninfer_score_token_logprobs PRIVATE ninfer_engine ninfer_core)
+
 # Host-only chat-template render cost by conversation length. It reads a template and synthesizes
 # its own conversation, so it needs no artifact and no GPU, and it separates the frontend's extra
 # boundary-proving renders by turning the conditions that trigger them on and off.

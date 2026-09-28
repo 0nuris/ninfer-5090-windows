@@ -44,6 +44,11 @@ struct Options {
     std::optional<std::filesystem::path> corpus;
     std::optional<std::filesystem::path> text;
     std::optional<std::filesystem::path> output;
+    // Opt-in per-token logprob dump. Off by default because the shipped corpora are a million tokens
+    // and the aggregate is what the corpus exists to measure. This exists to answer a narrower
+    // question: how far apart two candidate tokens are at one position, which needs the per-token
+    // value and cannot be recovered from the aggregate.
+    std::optional<std::filesystem::path> per_token_logprobs;
     std::uint32_t context               = 4096;
     std::uint32_t stride                = 2048;
     int device                          = 0;
@@ -57,7 +62,8 @@ std::string usage_text() {
            "(--corpus <manifest.json> [--quick] | --text <utf8-file>)\n"
            "       [--context N] [--stride N] [--device N]\n"
            "       [--kv-dtype bf16|int8|fp8|nvfp4|k8v4] [--output <directory>]\n"
-           "       [--log-level trace|debug|info|warning|error|critical|off]\n";
+           "       [--per-token-logprobs <csv>] "
+           "[--log-level trace|debug|info|warning|error|critical|off]\n";
 }
 
 [[noreturn]] void usage_error(std::string_view message) {
@@ -118,6 +124,8 @@ Options parse_options(int argc, char** argv) {
             }
         } else if (option == "--output") {
             out.output = std::filesystem::path(value("--output"));
+        } else if (option == "--per-token-logprobs") {
+            out.per_token_logprobs = std::filesystem::path(value("--per-token-logprobs"));
         } else if (option == "--log-level") {
             out.log_level = ninfer::product::parse_log_level(value("--log-level"));
         } else {
@@ -268,6 +276,20 @@ int run(const Options& options, const std::shared_ptr<spdlog::logger>& logger,
     json stream_reports             = json::array();
     std::uint64_t completed_windows = 0;
 
+    // Per-token logprobs, when asked for. The index column is the token's position within its
+    // stream, so two runs of the same stream can be aligned position by position; that is what
+    // makes a single position's candidate gap readable, and it is why this is a dump rather than
+    // another aggregate.
+    std::ofstream per_token;
+    if (options.per_token_logprobs) {
+        per_token.open(*options.per_token_logprobs, std::ios::trunc);
+        if (!per_token) {
+            throw std::runtime_error("could not open --per-token-logprobs " +
+                                     options.per_token_logprobs->string());
+        }
+        per_token << "stream,token_index,logprob\n";
+    }
+
     for (std::size_t stream_index = 0; stream_index < streams.size(); ++stream_index) {
         EvaluationStream& stream = streams[stream_index];
         std::ostringstream stream_status;
@@ -303,6 +325,12 @@ int run(const Options& options, const std::shared_ptr<spdlog::logger>& logger,
             }
             ScoreAggregate window_score;
             window_score.add(logprobs);
+            if (per_token.is_open()) {
+                for (std::size_t i = 0; i < logprobs.size(); ++i) {
+                    per_token << stream.source.id << ',' << (window.target_begin + i) << ','
+                              << logprobs[i] << '\n';
+                }
+            }
             stream_score.add(window_score);
             overall.add(window_score);
             domains[stream.source.domain].add(window_score);
