@@ -39,7 +39,37 @@ lane built from it is strictly better than the one we ship under that name. If i
 current split is correct and the reasoning gets written down so the next reader does not have to
 rediscover it.
 
-### 2. Recall@1 / Recall@16 / path-acceptance split
+### 2. Give the local NVFP4 encoder a scale search instead of max scaling
+**Why:** `tools/convert/quantization/nvfp4.py` is `NVFP4_MAXABS_DIVISOR_RNE_V1` and explicitly
+accepts no numerical parameters (`:70`), so it derives every scale from `global_amax`. It is a
+faithful port of Transformer Engine's NVFP4 recipe, validated against a ModelOpt checkpoint — but the
+*source* checkpoint for the `nvfp4nvidia` lane records `calibrator=NVFP4MSECalibrator` on all 193 of
+its NVFP4 weight quantizers. NVIDIA's own comparison measured max scaling as the worst of four
+calibrators (average drop 5.10 against 3.10 for Local-Hessian, on Qwen3.5-9B).
+**Scope:** 320 locally-encoded text projections on `nvfp4nvidia` (80 attention + 240 GDN), 293 on
+`nvfp4full`, and the same axis on `nvfp4swift`. **Zero on `nvfp4qat`** — all 512 of its text NVFP4
+projections are QUASAR's own QAT codes, imported, because its scales were trained.
+**Expected gain:** a fraction of a percent. `docs/maintainer/artifact-conventions.md` section 1 already
+prices the entire local-encoding axis at +0.05 % / +0.50 % perplexity.
+**Why still first:** it is free at runtime, needs no calibration data, and the evidence is the
+producer's own rather than ours.
+**Done when:** the encoder offers a searched scale alongside max, and a conversion of one lane is
+measured on the full corpus against its current figure.
+
+### 3. The W8 endpoints are 2.52 GiB, 14.3 % of everything bound
+**Why:** both W8 endpoints are Q8, which is the right default and the only choice with a measurement
+behind it. An NVFP4-endpoint build would return roughly 1.26 GiB — the same order as the whole spread
+between lanes that reach 262144 context and one that does not.
+**Done when:** an NVFP4-endpoint variant of one lane is built and measured, and the capacity difference
+is recorded against the lane's current free memory.
+
+### 4. The vision tower is quantized in all four artifacts and BF16 in all three sources
+**Why:** ours alone; no source checkpoint quantizes it, and no source measures doing so. Estimated
+around 600 MiB. **Perplexity cannot see it**, so it needs its own check.
+**Done when:** the decision is measured rather than assumed -- either a quality check that shows
+quantizing the tower is safe, or the tower is left BF16.
+
+### 5. Recall@1 / Recall@16 / path-acceptance split
 **Why:** the only diagnostic that discriminates three different root causes, and it needs no new
 kernel. The drafter emits `frame.candidate_ids` and `scores` at `draft.cpp:351-355`, shape `[16,K,B]`.
 Decompose per position:
@@ -52,7 +82,7 @@ healthy Recall@16 with collapsing path acceptance (selector); Recall@16 itself c
 position 1 (backbone or conditioning); or Recall@1 low at position 1 (head or conditioning weak from
 the first column).
 
-### 3. Interleaved re-measurement of all eight profiles
+### 6. Interleaved re-measurement of all eight profiles
 **Why:** the published table is wrong on our own numbers. `start_ninfer_v3_dflash2_vision` records
 340.4 tok/s / 68.8% and measured 291.0 / 53.4% — off by 14.5% and 15.4 points.
 `start_nvidia_v3_mtp5_vision` measured `[254.9, 167.7, 168.6]`, a **52% spread inside one profile**,
@@ -62,20 +92,21 @@ which is not a measurement at all; something else was on the card.
 that interleaving is not optional on this machine, because decode drifts up to ~9% between windows and
 two earlier "improvements" were really that drift.
 
-### 4. k8v4 KV against the shipped fp8
+### 7. k8v4 KV against the shipped fp8
 **Why:** every profile ships `--kv-dtype fp8`. K8V4 is available as a third option behind one flag.
-**Marked as third-party:** measured within 0.08% of BF16 on perplexity and no worse than fp8 — but on
-a different model, so it needs our own number.
+**No published evidence exists for k8v4.** The "within 0.08 % of BF16" figure that first prompted this
+was traced to NVFP4-KV against FP8-KV on Qwen3.5-397B-A17B — a different model, a different baseline,
+and not k8v4 at all. It is withdrawn. The test stands only as our own measurement to be made.
 **Done when:** perplexity and decode acceptance are compared across bf16 / fp8 / k8v4 on one shipping
 lane, interleaved.
 
-### 5. MTP draft window 5 to 10
+### 8. MTP draft window 5 to 10
 **Why:** our MTP lanes use 4 and 5. A NInfer fork raised MTP to 10 on the claim that longer proposals
 emit more per round, and **published no tok/s gain for it.**
 **Done when:** windows 4/5/8/10 are compared on one MTP lane, interleaved, with tok/s and acceptance
 reported together.
 
-### 6. ngram: the verify-tree integration
+### 9. ngram: the verify-tree integration
 **Why:** `PromptLookup` is ported and tested (`c0da270e`); the integration is not built. It needs
 `candidate_selector_tree`, `speculative_accept_tree_drafts`, `speculative_compact_columns`, tree-aware
 GDN replay and tree-aware target attention, each with a host oracle.
