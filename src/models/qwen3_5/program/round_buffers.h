@@ -79,9 +79,16 @@ struct DFlashDecodeIngress {
     std::array<std::int32_t, kMaximumConcurrency> target_valid_columns{};
     std::array<std::int32_t, kMaximumConcurrency> proposal_valid_columns{};
     // Copy proposals, uploaded on the same copy as the rest of this struct. A row whose
-    // `copy_valid_columns` is zero ignores them and the draft model's own proposal stands. The
-    // array is fixed at the round's column domain rather than the configured neural width, because a
-    // copy round runs the whole round -- draft model included -- at the wider window.
+    // `copy_valid_columns` is zero ignores them and the draft model's own proposal stands.
+    //
+    // The array is sized to the widest window the plan can provision rather than to the configured
+    // neural width, because the round's window is a property of the static layout and not of a call
+    // argument. `dflash_decode_batch_body` takes `k`, but no Op reads it: each re-derives its width
+    // from a tensor extent, and every one of those extents is fixed at startup from
+    // `draft_window` (round_buffers.cpp:126-128, 200-209, 345-346). Passing a larger `k` therefore
+    // does not widen the round, it reads past the end of `draft_tokens`; a copy round at the wider
+    // window needs its own layout and its own captured graphs. One ingress must therefore serve both
+    // widths, and indexing is `row * window + column` with the window the round actually runs at.
     //
     // This field is the only thing copy drafting adds to the ingress, and it costs no extra
     // transfer: the struct is already memcpy'd host-to-device every round (draft.cpp:576), so the
