@@ -23,7 +23,7 @@ from .methods import (
     import_encoded,
 )
 from .model import Model
-from .quantization.nvfp4 import nvfp4_maxabs, nvfp4_mse
+from .quantization.nvfp4 import nvfp4_maxabs
 from .sources.logical import LogicalSource, select_rows
 
 
@@ -386,8 +386,7 @@ class Recipe:
         # method's behaviour over a fused parent is unknown. A new built-in method that is missing
         # here does not fuse, and the engine then rejects the artifact at startup with "native input
         # requires one contiguous parent region".
-        standard = (cast_direct, grouped_absmax, fp8_row_maxabs, import_encoded, nvfp4_maxabs,
-                    nvfp4_mse)
+        standard = (cast_direct, grouped_absmax, fp8_row_maxabs, import_encoded, nvfp4_maxabs)
         for names in self.model.packing_groups:
             if any(
                 name in used or name in self.aliases or name in self.separate_parameters
