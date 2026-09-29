@@ -125,6 +125,33 @@ def ceiling_of(art: str, spec: str, vision: bool, lm_head: bool) -> int:
             or 131072)
 
 DECODE_TOKENS = 400
+
+# The sampling configuration Qwen3.8-27B's own model card recommends for Instruct (non-thinking)
+# mode, which is what code generation is. Sourced from the checkpoint's README.md, not chosen here:
+#
+#   "We recommend using the following sets of sampling parameters for generation:
+#    - Thinking Mode: temperature=1.0, top_p=0.95, top_k=20, min_p=0.0, presence_penalty=0.0
+#    - Instruct (or non-thinking) mode: temperature=0.7, top_p=0.80, top_k=20, min_p=0.0,
+#      presence_penalty=1.5"
+#
+# These are not this port's values either. frontend.cpp's default_sampling() already encodes exactly
+# this pair, presence_penalty 1.5 included, so the engine's shipped default was right and the bench was
+# overriding it with 0.6 / 0.95 and no presence_penalty at all. The table is kept explicit because a
+# measurement that silently depends on a server default is one nobody can see, and the card's coding
+# benchmarks (SWE-bench Pro, DeepSWE, QwenSWEBench) are reported under one of these two sets.
+#
+# repetition_penalty appears in the card at 1.0 and is deliberately absent: this engine's request
+# contract has no such field (types.h carries temperature, top_p, top_k, min_p, presence_penalty and
+# frequency_penalty), and 1.0 is the identity, so sending it would add an unsupported key for no
+# behavioural change.
+DOCUMENTED_SAMPLING: dict[str, object] = {
+    "temperature": 0.7,
+    "top_p": 0.80,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 1.5,
+}
+
 CODE_PROMPT = (
     "Write a Python module with: a dataclass Point(x, y), a function distance(a, b) "
     "returning Euclidean distance, and a function closest_pair(points) returning the two "
@@ -177,9 +204,19 @@ def post(payload: dict, timeout: int = 1800) -> tuple[dict, float]:
 def run_once_gen(prompt: str, max_tokens: int, sampling: str = "default") -> tuple[int, float, str]:
     """Send one completion.
 
-    sampling "default" is the realistic profile run; "zero" pins temperature 0; "none"
-    sends no sampling fields at all, which is the only way the server's --greedy flag
-    governs (the docs are explicit that request fields override server flags).
+    sampling "default" is the realistic profile run and carries the sampling configuration
+    Qwen3.8-27B's own model card recommends for Instruct (non-thinking) mode -- temperature 0.7,
+    top_p 0.80, top_k 20, min_p 0.0, presence_penalty 1.5. Coding is the instruct case, and the
+    card's coding benchmarks are the same configuration.
+
+    This was temperature 0.6 / top_p 0.95 and nothing else, which the card specifies for no mode, and
+    it overrode an engine default that already had the documented values including presence_penalty
+    1.5. So the profile table was measured at an operating point the model does not document and the
+    engine does not default to, which is why a token's worth of accuracy and diversity was being traded
+    away invisibly on every measurement.
+
+    "zero" pins temperature 0; "none" sends no sampling fields at all, which is the only way the
+    server's --greedy flag governs (the docs are explicit that request fields override server flags).
     """
     body = {
         "model": CURRENT_MODEL_ID,
@@ -187,8 +224,7 @@ def run_once_gen(prompt: str, max_tokens: int, sampling: str = "default") -> tup
         "max_tokens": max_tokens,
     }
     if sampling == "default":
-        body["temperature"] = 0.6
-        body["top_p"] = 0.95
+        body.update(DOCUMENTED_SAMPLING)
     elif sampling == "zero":
         body["temperature"] = 0
         body["top_p"] = 1
