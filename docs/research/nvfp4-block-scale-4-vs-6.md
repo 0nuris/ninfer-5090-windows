@@ -87,3 +87,27 @@ The other candidate from the same research, per-channel smoothing, was not tried
 are from diffusion models; the LLM evidence is NVIDIA's ModelOpt integration and a QAT-comparable
 quality claim, not a published perplexity delta on a model of this size. It remains untested here and
 should not be assumed to behave like this experiment did.
+
+## Why the two experiment artifacts were deleted
+
+Both conversions this experiment produced -- `exp_ctl_unsloth.ninfer` and `exp_bs4_unsloth.ninfer`,
+16.37 GiB each -- were deleted after the measurement, and the reasoning is worth stating because the
+same rule was applied in the opposite direction to `C:\AI\models\_superseded\` in the same session.
+
+The rule is not "keep the artefact for every recorded figure". It is that **re-deriving a figure should
+cost about the same whether or not its artefact survives.**
+
+- The seven artifacts in `_superseded` are kept because re-deriving them is impossible here. The
+  converter toolchain belongs to another fork and is not carried in this tree, so a locally converted
+  build cannot be rebuilt at all, and the artefact is the only evidence behind the rows it backs.
+- These two are deleted because re-deriving them is one constant and a 124-second conversion. The
+  recipe is the evidence; the artefact was a cache.
+
+The control was doubly redundant: a fresh conversion with the unmodified recipe measured 4.998419 with
+all four per-domain values identical to the shipped `nvfp4full` artifact, so the shipped artifact is
+already an equally good baseline and this experiment's variant is not the baseline for any later one.
+
+What was kept is the provenance: `out/exp_ctl_unsloth.ninfer.conversion.json` and its variant, 337 KB
+each, recording the per-object format and shape of both builds. That is the part that is cheap to keep
+and expensive to reconstruct, and it is the same reason the six `.stale` conversion reports were renamed
+rather than deleted.
