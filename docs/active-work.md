@@ -233,13 +233,14 @@ is, and accept-always is correct. A control that passes for a structural reason 
 multi-token case is where the accept rule actually has arithmetic to get wrong, and it was the one
 configuration nobody was checking.
 
-### 12. Upstream's 14 commits are ready except the new FP8 TMA route, which does not run here
-**Attempted 2026-09-29. Merge aborted, not committed. 13 of 14 are otherwise clean.**
+### 12. Upstream's 14 commits are merged; the FP8 A8 TMA route is held back on Windows only
+**Attempted 2026-09-29, first aborted, then merged the same day. Suite green with it: 135 tests,
+133 passed, the two by-construction `dflash_real` and `moe_real`; `check_test_baseline.py` GATE PASSED.**
 
-`upstream/dev` is at `d44ab584` and we are 14 behind, 426 ahead. Merging touches 171 files. The merge is
+`upstream/dev` is at `d44ab584` and we were 14 behind, 426 ahead. The merge touches 171 files. It is
 **five conflicts, all documentation** — every kernel, program file and test auto-merges, and the merge
 does not touch the profile table, the launchers or the packager, so the shipped configuration is
-unaffected. Resolutions worked out, to reuse rather than re-derive:
+unaffected. Resolutions, to reuse rather than re-derive:
 
 - **Keep our deletion** of `docs/performance/qwen3.8-27b.md` and
   `model-cards/Qwen3.8-27B-nvfp4-NInfer/README.md`. Upstream modified both, but their figures are pinned
@@ -247,46 +248,52 @@ unaffected. Resolutions worked out, to reuse rather than re-derive:
   chunk, prefix reuse disabled). Ours is FP8 KV, a different chunk, prefix reuse on, different artifacts,
   so taking their version republishes their measurements as ours. Deleted by `1b53a301`.
 - **Ours** for `README.md` and the three hunks of `docs/performance.md`: upstream's side links a dozen
-  pages this port deleted and carries their AIME/GPQA/ERQA scores, with encoding damage in them.
+  pages this port deleted and carries their AIME/GPQA/ERQA scores.
 - **Neither side**, for one hunk of `tools/bench/README.md`, and this is a real three-way. The merged
   code is `RUN_SCHEMA_VERSION = 8` (upstream's bump) and `SERVER_LOG_SCHEMA_VERSION = 22` (this port's
   bump; upstream is on 21), so the correct text is **v8 and v22 plus the KV dtype** upstream added.
   Asking the merged code beat picking a side.
 
-**The blocker: `src/ops/linear/fp8/fp8_a8_tma_mma.cuh` is new in this merge and does not run on this
-port's target.** Two failures, in order:
+**What the merge needed from this port, in two parts.**
 
-1. It does not compile on MSVC — `error C2719: 'descriptors': formal parameter with requested alignment
-   of 128 won't be aligned`. A by-value `__grid_constant__ alignas(128)` TMA descriptor is fine for Clang
-   and cannot be laid out by the MSVC ABI. Fixed with the port's own established pattern (`723c1290`'s
-   `NINFER_NVFP4_TMA_DESCRIPTOR_PARAM`): a macro that is a pointer on `_WIN32` and the by-value parameter
-   elsewhere, a `descriptor_block` local, and an RAII device copy whose allocation, copy and free are all
-   ordered on the consuming stream — a NULL-stream free is ordered against nothing on a non-blocking
-   stream and the pool can recycle the block under the TMA unit's read, which is the 786,432-token prefill
-   live-lock that shape already caused here once.
-2. With that fix the tree builds clean, 679/679. **Then the kernel faults at execution**:
-   `cudaErrorIllegalInstruction`, which poisons the context so the test aborts `0xc0000409`. Nine tests
-   fail — six FP8 paths and three real-model tests, including `ninfer_qwen3_5_dflash2_real_test`, one of
-   the three the baseline gate requires. So this is not a slow merge; it is a merge that breaks the
-   product.
+1. `src/ops/linear/fp8/fp8_a8_tma_mma.cuh` does not compile on MSVC — `error C2719`, a by-value
+   `__grid_constant__ alignas(128)` TMA descriptor that the MSVC ABI cannot lay out. Fixed with the
+   port's own established pattern (`723c1290`'s `NINFER_NVFP4_TMA_DESCRIPTOR_PARAM`): a macro that is a
+   pointer on `_WIN32` and the by-value parameter elsewhere, a `descriptor_block` local, and an RAII
+   device copy whose allocation, copy and free are all ordered on the consuming stream — a NULL-stream
+   free is ordered against nothing on a non-blocking stream and the pool can recycle the block under the
+   TMA unit's read, which is the 786,432-token prefill live-lock that shape already caused here once.
 
-**Known and not known.** The old non-TMA route survives — `launch_fp8_a8` in `fp8_launch.cuh:37` calling
-`launch_fp8_a8_mma` — and upstream's change is *additive*: it added `launch_fp8_a8_tma`, and the five shape
-files now choose between the two, most shapes now routing to TMA. **Holding the TMA route is therefore a
-bounded change**: route those shapes back to the pre-merge `launch_fp8_a8<...>` schedule. That is untried
-and needs its own build and suite run.
+2. **Upstream routed every FP8 A8 path to that TMA kernel, and it faults here at execution** with
+   `cudaErrorIllegalInstruction`, which poisons the context so the test aborts `0xc0000409`. There is no
+   single seam: a TMA schedule and an MMA schedule are different tile shapes, so the *selection* has to
+   differ. All **six** call sites are gated on Windows — the five `linear/fp8` shape files plus
+   `attn_input_proj`, `gdn_input_proj`, `linear_add` and `linear_swiglu` — each restored to its
+   **pre-merge dispatch verbatim**, because those are the bodies that passed. Upstream's routes stay in
+   the tree and stay selected on other platforms.
 
-Why the kernel faults is **not established**. `compute-sanitizer --tool memcheck` on the smallest failing
-test ran 30 minutes without naming an instruction, then degraded to `cudaErrorUnknown` — a context loss,
-which is the TDR hazard `tools/scripts/test_v3_compute_sanitizer.cmd` documents for this card. Whether it
-is an sm_120a limitation, a defect in upstream's kernel, or something the port's descriptor change
-contributes is unknown, and no claim is made about it. Debugging is the expensive path; holding the route
-is the cheap one.
+   The A/B that established the route rather than the workaround as at fault: gating only the
+   `tokens <= 192` branch of `n14336_k5120` made T=129 pass and moved the failure to T=385, the next TMA
+   branch. So the pre-merge route runs and the TMA route does not. One limit worth keeping: this shows
+   the TMA route *as it must be built on MSVC* does not run, not that it is broken independent of the
+   descriptor workaround, because the by-value form cannot be compiled here at all. `compute-sanitizer`
+   under memcheck ran 30 minutes on the smallest failing test without naming an instruction and then lost
+   the context, the watchdog hazard `tools/scripts/test_v3_compute_sanitizer.cmd` already documents here.
 
-**Done when:** either the TMA route runs with a green suite, or the shapes are routed back to
-`launch_fp8_a8` and the other 13 commits land. The merge is redoable with `git merge upstream/dev`. Telling
-upstream the route faults on a consumer Blackwell target is worth doing either way.
+**The suite grew 133 to 135 from this merge**, which `tools/release/test_baseline.json` now records, and
+`ninfer_qwen3_5_dflash_prefill_real_test` was added to `required_tests`: it reads `NINFER_TEST_ARTIFACT`
+and skipped without it, and it passed against this product's artifact in 6.73 s, so the evidence the
+gate exists to demand is available here. `ninfer_bench_fixtures_test` needs no artifact and so belongs to
+neither list. The count was derived by enumerating both registration macros across all thirteen
+registration sites under `tests/` and differencing that set against `HEAD` — deriving it from recorded
+numbers alone is what produced two wrong counts in this file before, and a first pass that scanned two
+files and one macro found the net as zero and missed both additions.
 
+**Not established:** why the FP8 TMA kernel faults. It may be an sm_120a limitation or a defect in
+upstream's kernel, and telling upstream it faults on a consumer Blackwell target is worth doing either
+way.
+
+---
 ---
 
 ## Closed — do not reopen

@@ -2416,6 +2416,23 @@ int run_quantized_causal_cases(KvCacheStorage storage) {
         const std::array<int, 4> queries{0, 63, 64, 1023};
         failures += run_a1_case(geometry, storage, {1024, 8192, 9216, 611u},
                                 MappingPattern::Fragmented, queries);
+        if (storage == KvCacheStorage::Fp8E4M3Row256 ||
+            storage == KvCacheStorage::Fp8KeyNvfp4Value) {
+            // Ragged prefill, changing page metadata, and wholly masked query tiles.
+            failures += run_batch_case(geometry, storage,
+                                       {129,
+                                        {17},
+                                        {65},
+                                        {0},
+                                        MappingPattern::Fragmented,
+                                        619u,
+                                        true,
+                                        {{17}, {1025}, {63}}},
+                                       2048);
+            const std::array<int, 3> tail_queries{0, 127, 128};
+            failures += run_a3_case(geometry, storage, {129, 8192, 8321, 620u},
+                                    MappingPattern::Fragmented, tail_queries);
+        }
         failures += run_a1_case(geometry, storage, {1, 63, 64, 612u, false, true},
                                 MappingPattern::Fragmented);
         failures += run_a3_case(geometry, storage, {1, 0, 1, 613u, false, true},
@@ -2547,6 +2564,25 @@ int verify_workspace_capacity_contract(KvCacheStorage storage) {
         ++failures;
     }
 
+    {
+        // Prefill split counts can decrease as query width grows. The interval
+        // query must still cover every supported point, including before a drop.
+        for (const auto& item : kGeometries) {
+            constexpr ops::CausalAttentionExecutionEnvelope prefill_envelope{1, 131072};
+            std::size_t largest = 0;
+            for (int width = 17; width <= 1025; ++width)
+                largest = std::max(
+                    largest, ops::causal_softmax_attention_workspace_capacity_bytes(
+                                 op_geometry(item), storage, prefill_envelope, 1, width, width));
+            const auto capacity = ops::causal_softmax_attention_workspace_capacity_bytes(
+                op_geometry(item), storage, prefill_envelope, 1, 17, 1025);
+            if (capacity != largest) {
+                std::cerr << "causal_softmax_attention prefill interval capacity mismatch\n";
+                ++failures;
+            }
+        }
+    }
+
     try {
         (void)ops::causal_softmax_attention_workspace_capacity_bytes(
             {kHeadDim, 16, 2}, storage, {1, ops::kCausalAttentionMaximumVisibleKeys}, 1, 1, 1);
@@ -2582,6 +2618,31 @@ int run_numerical_profile_cases(KvCacheStorage storage) {
     return failures;
 }
 
+int run_small_prefill_cases(KvCacheStorage storage) {
+    int failures = 0;
+    const std::array<int, 4> append_queries{0, 7, 16, 33};
+    const std::array<int, 4> cached_queries{0, 63, 64, 128};
+    const std::array<int, 3> boundary_queries{0, 127, 256};
+    for (const auto& geometry : kGeometries) {
+        failures += run_a1_case(geometry, storage, {34, 8191, 32768, 1301u, false, true},
+                                MappingPattern::Fragmented, append_queries);
+        failures += run_a3_case(geometry, storage,
+                                {129, 32768, 131072, 1302u, false, false, 1.8f * std::sqrt(3.0f)},
+                                MappingPattern::Fragmented, cached_queries);
+        failures += run_a3_case(geometry, storage, {257, 8192, 16384, 1303u},
+                                MappingPattern::Offset, boundary_queries);
+        failures += run_batch_case(
+            geometry, storage, {65, {8191}, {17}, {0}, MappingPattern::Fragmented, 1304u}, 32768);
+        if (storage == KvCacheStorage::Fp8E4M3Row256 ||
+            storage == KvCacheStorage::Fp8KeyNvfp4Value) {
+            failures += run_a3_case(geometry, storage,
+                                    {34, 8192, 32768, 1305u, false, false, 1.8f * std::sqrt(3.0f)},
+                                    MappingPattern::Fragmented, append_queries);
+        }
+    }
+    return failures;
+}
+
 int run_storage_cases(KvCacheStorage storage) {
     int failures = verify_workspace_capacity_contract(storage);
     if (storage == KvCacheStorage::Nvfp4Group16) {
@@ -2611,6 +2672,7 @@ int run_storage_cases(KvCacheStorage storage) {
     failures += run_graph_envelope_cases(storage);
     failures += run_verify_width_cases(storage);
     failures += run_numerical_profile_cases(storage);
+    failures += run_small_prefill_cases(storage);
     return failures;
 }
 

@@ -1,9 +1,13 @@
 #include "ops/softmax_attention/dense/causal_cache/fp8/plan.h"
 #include "ops/softmax_attention/dense/causal_cache/fp8/operands.h"
+#include "ops/softmax_attention/common/mxfp8_tiled_plan.h"
 #include <algorithm>
 #include <stdexcept>
 
 namespace ninfer::ops::detail {
+namespace {
+constexpr int kGroupedPrefillMaxWidth = 80;
+} // namespace
 
 Fp8KvCausalPlan make_fp8_kv_causal_plan(int heads, int width, int batch,
                                         CausalAttentionExecutionEnvelope envelope) {
@@ -13,9 +17,12 @@ Fp8KvCausalPlan make_fp8_kv_causal_plan(int heads, int width, int batch,
         envelope.max_visible_keys > kCausalAttentionMaximumVisibleKeys)
         throw std::invalid_argument("FP8 attention: invalid plan inputs");
     constexpr int grouped_limit = Fp8KvCausalPlan::kTokenTile;
-    const auto family           = width <= grouped_limit ? Fp8KvFamily::Grouped
-                                  : width <= 16          ? Fp8KvFamily::ParallelGrouped
-                                                         : Fp8KvFamily::Tiled;
+    const auto family           = width <= grouped_limit             ? Fp8KvFamily::Grouped
+                                  : width <= kGroupedPrefillMaxWidth ? Fp8KvFamily::ParallelGrouped
+                                                                     : Fp8KvFamily::Tiled;
+    if (family == Fp8KvFamily::Tiled)
+        return {family, heads,    width,
+                batch,  envelope, mxfp8_tiled_partition(heads, width, envelope.max_visible_keys)};
     const int tiles =
         family == Fp8KvFamily::ParallelGrouped ? (width + grouped_limit - 1) / grouped_limit : 1;
     const int independent_tiles = batch * (heads == 24 ? 4 : 2) * tiles;
@@ -35,7 +42,7 @@ Fp8KvCausalPlan make_fp8_kv_causal_plan(int heads, int width, int batch,
 std::size_t fp8_kv_workspace_bytes(int heads, int batch, int min_width, int max_width,
                                    CausalAttentionExecutionEnvelope envelope) {
     std::size_t maximum = 0;
-    for (int width = min_width; width <= std::min(max_width, 16); ++width) {
+    for (int width = min_width; width <= std::min(max_width, kGroupedPrefillMaxWidth); ++width) {
         const auto plan = make_fp8_kv_causal_plan(heads, width, batch, envelope);
         if (plan.family == Fp8KvFamily::Tiled) continue;
         const int splits = plan.partition.capacity;
@@ -43,7 +50,9 @@ std::size_t fp8_kv_workspace_bytes(int heads, int batch, int min_width, int max_
         (void)allocate_causal_partials(layout, heads, width, splits, batch);
         maximum = std::max(maximum, layout.peak_bytes(1));
     }
-    return maximum;
+    return std::max(maximum, mxfp8_tiled_workspace_bytes(
+                                 heads, std::max(min_width, kGroupedPrefillMaxWidth + 1), max_width,
+                                 envelope.max_visible_keys));
 }
 
 } // namespace ninfer::ops::detail
