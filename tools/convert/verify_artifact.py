@@ -328,8 +328,14 @@ def check_values(
     stores: dict[str, Any],
     report: Report,
     tolerance: float,
+    methods: dict[str, str],
 ) -> None:
-    """Decode each NVFP4 payload and compare it against the source matrix it claims to encode.
+    """Decode each NVFP4 payload and compare it against the source it was made from.
+
+    The site -> method map decides the reference and the bound for each site; see _compare_site. The
+    two families are counted separately, so a run says how many payloads it proved bit-identical and
+    how many it bounded against the format's arithmetic, rather than reporting one total that mixes
+    a copy check with a lossy one.
 
     This is the check the fork's ``verify_*`` entry points describe and this tree lacked. It is
     deliberately the expensive one -- decoding all 26.1 billion elements of the nvidia lane takes
@@ -408,23 +414,31 @@ def check_values(
             for name, start, rows, columns in entries:
                 got = parent[start : start + rows, :columns]
                 _compare_site(
-                    name, got, model, stores, report, tolerance, obj.shape[1]
+                    name,
+                    got,
+                    model,
+                    stores,
+                    report,
+                    tolerance,
+                    obj.shape[1],
+                    methods.get(name, "unknown"),
                 )
         finally:
             # Released before the next parent is read, not at the end of the loop.
             del parent
 
 
-def _load_sources(args: argparse.Namespace) -> tuple[Any, Any]:
+def _load_sources(args: argparse.Namespace) -> tuple[Any, Any, dict[str, str]]:
     """Build the model and open the sources, through the same path the converter uses.
 
     Reusing tools.convert.qwen3_5.build_model and the recipe's own ``model.source`` is the point: the
     verifier then cannot disagree with the recipe about which source matrix a site came from, so a
     disagreement it does report is about the stored bytes and not about the naming.
 
-    The recipe is run for real, against a real Recipe object, rather than having its mapping guessed
-    at -- it is what installs the site-to-source factories on the model's parameters, and passing
-    None here would leave every ``model.source`` call raising instead of checking anything.
+    Returns the per-site method name as well, because that decides *how* a site is checked. The
+    recipe is run for real against a real Recipe object rather than having its mapping guessed at --
+    it is what installs the site-to-source factories on the model's parameters, and passing None here
+    would leave every ``model.source`` call raising instead of checking anything.
     """
     if not args.recipe:
         raise SystemExit("verify: --values needs --recipe and --source")
@@ -467,11 +481,21 @@ def _load_sources(args: argparse.Namespace) -> tuple[Any, Any]:
         model = build_model(
             base, components=("text", "vision", "mtp", "dflash2"), companions=companions
         )
-        RECIPES[args.recipe](model, Recipe(model), sources)
+        recipe = Recipe(model)
+        RECIPES[args.recipe](model, recipe, sources)
+        # prepare() is the only place a site's method is recorded, and that is what decides how the
+        # site is checked: an imported word must equal its source exactly, while an encoded one is
+        # only required to reproduce the BF16 source within NVFP4's own arithmetic. Read from the
+        # recipe rather than inferred from the format, because the two are not distinguishable from
+        # the artifact alone. Device cpu: it resolves the job graph, and the decode is host-side.
+        methods: dict[str, str] = {}
+        for job in recipe.prepare(device="cpu").weights:
+            for parameter in job.parameters:
+                methods[parameter] = job.method_name
         # The model and its sources must outlive this function, so the stack is kept alive on the
         # returned handle rather than closing the file handles here.
         stack.pop_all()
-    return model, sources
+    return model, sources, methods
 
 
 def _compare_site(
@@ -482,22 +506,49 @@ def _compare_site(
     report: Report,
     tolerance: float,
     columns: int,
+    method: str,
 ) -> None:
-    """Compare one decoded slice against the source matrix the recipe says it came from."""
+    """Compare one decoded slice against the right reference for how the recipe produced it.
+
+    Two families, and conflating them is what made the first run report 32 false failures:
+
+      ``import_encoded`` -- the words are *copied* from an already-NVFP4 source. The reference is
+        that encoded source and the error must be **exactly zero**. Checked against the BF16 base
+        instead, the comparison measures the quantization gap the import is supposed to preserve, and
+        reported up to 0.20 on payloads that are in fact bit-identical to their source.
+
+      ``nvfp4_maxabs`` -- the words are *encoded* from a floating-point source, so the reference is
+        that source and the bound is NVFP4's own arithmetic: 1/6 for rounding a value to the nearest
+        E2M1 magnitude, plus 1/16 for the block scale's 3-bit E4M3FN mantissa, which scales all 16
+        values in the block. 0.2292 in total.
+
+    This is the split artifact-conventions.md section 2 already states -- "Imported words are copied,
+    local words are proven" -- and the verifier was not honouring it.
+    """
+    imported = method == "import_encoded"
+    # The store order encodes the intent: an encoded source first for an import, the floating-point
+    # source first for a local encode. Trying the other is a fallback, not the plan.
+    attempts = (
+        (("quantized", "nvfp4"), ("base", None), ("dflash2", None))
+        if imported
+        else (("base", None), ("dflash2", None), ("quantized", "nvfp4"))
+    )
     expected = None
     reason = ""
-    for store in stores.values():
-        for hint in (None, "nvfp4"):
-            try:
-                source = model.source(name, store, hint)
-                values = source.values(0, got.shape[0] * columns)
-            except Exception as error:  # noqa: BLE001
-                reason = f"{type(error).__name__}: {error}"
-                continue
-            expected = values.reshape(got.shape[0], columns)
-            break
-        if expected is not None:
-            break
+    used = ""
+    for store_name, hint in attempts:
+        store = stores.get(store_name)
+        if store is None:
+            continue
+        try:
+            source = model.source(name, store, hint)
+            values = source.values(0, got.shape[0] * columns)
+        except Exception as error:  # noqa: BLE001
+            reason = f"{type(error).__name__}: {error}"
+            continue
+        expected = values.reshape(got.shape[0], columns)
+        used = f"{store_name}/{hint}"
+        break
     if expected is None:
         report.check(
             f"source mapping {name}", False, reason or "no opened source maps this site"
@@ -510,12 +561,20 @@ def _compare_site(
         report.count("values")
         return
     error_ratio = float((got - want).abs().max()) / scale
+    if imported:
+        report.check(
+            f"imported words {name}",
+            error_ratio == 0.0,
+            f"an imported payload must equal {used} exactly, max relative error {error_ratio:.6f}",
+        )
+        report.count("imported_words")
+        return
     report.check(
-        f"values {name}",
+        f"encoded values {name}",
         error_ratio <= tolerance,
-        f"max relative error {error_ratio:.4f} exceeds {tolerance:.4f}",
+        f"max relative error {error_ratio:.4f} against {used} exceeds {tolerance:.4f}",
     )
-    report.count("values")
+    report.count("encoded_values")
 
 
 def projected_peak_bytes(artifact: Artifact) -> int:
@@ -574,11 +633,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--tolerance",
         type=float,
-        default=1.0 / 6.0,
+        default=1.0 / 6.0 + 1.0 / 16.0,
         help=(
-            "max relative error for a value check (default 1/6, which is NVFP4's own "
-            "worst-case block error: a 16-element block scaled so its largest value "
-            "reaches the E2M1 maximum, rounded to the nearest representable magnitude)"
+            "max relative error for a LOCALLY ENCODED site (default 1/6 + 1/16 = 0.2292). "
+            "1/6 is NVFP4's own worst-case value rounding -- a 16-element block scaled so its "
+            "largest value reaches the E2M1 maximum, then rounded to the nearest representable "
+            "magnitude -- and 1/16 is the block scale's own 3-bit E4M3FN mantissa, which is off by "
+            "up to half an ulp and scales all 16 values in the block. Imported sites are not bounded "
+            "by this: their words must be identical to their source, and the check is exact."
         ),
     )
     parser.add_argument(
@@ -625,8 +687,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 1
-            model, stores = _load_sources(args)
-            check_values(artifact, model, stores, report, args.tolerance)
+            model, stores, methods = _load_sources(args)
+            check_values(artifact, model, stores, report, args.tolerance, methods)
 
     for key in sorted(report.counts):
         print(f"  {key:<18} {report.counts[key]}")
