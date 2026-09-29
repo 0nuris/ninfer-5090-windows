@@ -233,6 +233,60 @@ is, and accept-always is correct. A control that passes for a structural reason 
 multi-token case is where the accept rule actually has arithmetic to get wrong, and it was the one
 configuration nobody was checking.
 
+### 12. Upstream's 14 commits are ready except the new FP8 TMA route, which does not run here
+**Attempted 2026-09-29. Merge aborted, not committed. 13 of 14 are otherwise clean.**
+
+`upstream/dev` is at `d44ab584` and we are 14 behind, 426 ahead. Merging touches 171 files. The merge is
+**five conflicts, all documentation** — every kernel, program file and test auto-merges, and the merge
+does not touch the profile table, the launchers or the packager, so the shipped configuration is
+unaffected. Resolutions worked out, to reuse rather than re-derive:
+
+- **Keep our deletion** of `docs/performance/qwen3.8-27b.md` and
+  `model-cards/Qwen3.8-27B-nvfp4-NInfer/README.md`. Upstream modified both, but their figures are pinned
+  to *their* revisions (`f08597d`, `32c9881`) and *their* config (INT8 group-64 KV, 1,024-token prefill
+  chunk, prefix reuse disabled). Ours is FP8 KV, a different chunk, prefix reuse on, different artifacts,
+  so taking their version republishes their measurements as ours. Deleted by `1b53a301`.
+- **Ours** for `README.md` and the three hunks of `docs/performance.md`: upstream's side links a dozen
+  pages this port deleted and carries their AIME/GPQA/ERQA scores, with encoding damage in them.
+- **Neither side**, for one hunk of `tools/bench/README.md`, and this is a real three-way. The merged
+  code is `RUN_SCHEMA_VERSION = 8` (upstream's bump) and `SERVER_LOG_SCHEMA_VERSION = 22` (this port's
+  bump; upstream is on 21), so the correct text is **v8 and v22 plus the KV dtype** upstream added.
+  Asking the merged code beat picking a side.
+
+**The blocker: `src/ops/linear/fp8/fp8_a8_tma_mma.cuh` is new in this merge and does not run on this
+port's target.** Two failures, in order:
+
+1. It does not compile on MSVC — `error C2719: 'descriptors': formal parameter with requested alignment
+   of 128 won't be aligned`. A by-value `__grid_constant__ alignas(128)` TMA descriptor is fine for Clang
+   and cannot be laid out by the MSVC ABI. Fixed with the port's own established pattern (`723c1290`'s
+   `NINFER_NVFP4_TMA_DESCRIPTOR_PARAM`): a macro that is a pointer on `_WIN32` and the by-value parameter
+   elsewhere, a `descriptor_block` local, and an RAII device copy whose allocation, copy and free are all
+   ordered on the consuming stream — a NULL-stream free is ordered against nothing on a non-blocking
+   stream and the pool can recycle the block under the TMA unit's read, which is the 786,432-token prefill
+   live-lock that shape already caused here once.
+2. With that fix the tree builds clean, 679/679. **Then the kernel faults at execution**:
+   `cudaErrorIllegalInstruction`, which poisons the context so the test aborts `0xc0000409`. Nine tests
+   fail — six FP8 paths and three real-model tests, including `ninfer_qwen3_5_dflash2_real_test`, one of
+   the three the baseline gate requires. So this is not a slow merge; it is a merge that breaks the
+   product.
+
+**Known and not known.** The old non-TMA route survives — `launch_fp8_a8` in `fp8_launch.cuh:37` calling
+`launch_fp8_a8_mma` — and upstream's change is *additive*: it added `launch_fp8_a8_tma`, and the five shape
+files now choose between the two, most shapes now routing to TMA. **Holding the TMA route is therefore a
+bounded change**: route those shapes back to the pre-merge `launch_fp8_a8<...>` schedule. That is untried
+and needs its own build and suite run.
+
+Why the kernel faults is **not established**. `compute-sanitizer --tool memcheck` on the smallest failing
+test ran 30 minutes without naming an instruction, then degraded to `cudaErrorUnknown` — a context loss,
+which is the TDR hazard `tools/scripts/test_v3_compute_sanitizer.cmd` documents for this card. Whether it
+is an sm_120a limitation, a defect in upstream's kernel, or something the port's descriptor change
+contributes is unknown, and no claim is made about it. Debugging is the expensive path; holding the route
+is the cheap one.
+
+**Done when:** either the TMA route runs with a green suite, or the shapes are routed back to
+`launch_fp8_a8` and the other 13 commits land. The merge is redoable with `git merge upstream/dev`. Telling
+upstream the route faults on a consumer Blackwell target is worth doing either way.
+
 ---
 
 ## Closed — do not reopen
