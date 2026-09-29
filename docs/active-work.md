@@ -340,12 +340,33 @@ come from one artifact in production, so the guard costs nothing, and
 `ninfer_dflash2_nvfp4_routes_test` still passes, which is the evidence that the real route is
 unaffected. The test asserts the refusal, so the hole cannot reopen silently.
 
-A second, smaller inconsistency is recorded and not fixed, because it is a wrong-value bug rather
-than a fault and fixing it changes shipped arithmetic: `codebook_scale_offset` (predecessor) uses the
-canonical `(token/128)*4*512 + (group/4)*512 + in_tile + group%4`, while the successor staging inside
-`score_row` uses `(token/128*4 + lane)*512 + in_tile`, treating `lane` as the tile index instead of
-`group/4`. The two agree only for group 0. The new test now covers this path, so the discrepancy is
-visible rather than latent; it needs a decision about which is correct before anything is changed.
+**A suspected second defect was reported here, and it was wrong; the correction is the point.** The two
+scale-plane expressions in this kernel look different -- `codebook_scale_offset` for the predecessor is
+the canonical `(token/128)*4*512 + (group/4)*512 + in_tile + group%4`, while the successor staging in
+`score_row` reads four bytes at `(token/128*4 + lane)*512 + in_tile` -- and that reads as though
+`lane` were standing in for `group/4`. It is not a defect and there is nothing to fix. They differ in
+granularity, not meaning: substituting `group = lane*4 + j` into the canonical form gives
+`(token/128)*4*512 + lane*512 + in_tile + j`, which is the successor's base plus the j-th byte of its
+four-byte copy. So `lane` selects the 512-byte scale tile, and the four bytes of the copy supply that
+tile's four `inner_k` values.
+
+Established three ways rather than by re-reading, because the first reading was what produced the
+error. By measurement: perturbing the successor staging to read the neighbouring scale tile makes the
+new test fail outright -- `max_abs=1, actual=1 reference=0` -- and reverting it with a real recompile
+makes the test pass, so the test genuinely constrains the group mapping. That coverage is what this
+wave added, and it is why the question was answerable at all. By the specification: FlashInfer
+documents the NVFP4 128x4 block-scale swizzle as
+`m_tile_idx*k_tiles*512 + k_tile_idx*512 + outer_m*16 + inner_m*4 + inner_k`, with `outer_m = row % 32`
+and `inner_m = (row % 128) // 32`, which is `nvfp4_scale_byte_offset` in this repository exactly, and
+the kernel's own comment already says the staging gathers "the row's four 4-byte scale groups, one per
+512-byte K16M128x4 tile". And by the algebra, as above.
+
+One process note, because it nearly produced a false result here. After reverting the perturbation the
+test still failed, and the cause was a build that did not recompile the `.cu`: the reverted source was
+on disk while the perturbed object was still linked. The file matched HEAD and the tree was clean, so
+every available check said the source was correct while the binary was not. Forcing the recompile made
+it pass. A green source tree is not a green binary, and a test result is evidence about the artefact
+that was actually run.
 
 **The golden that had no in-tree anchor: labelled, not invented.** `test_engine_prefix_real.cpp`
 asserted the thinking prompt at 58 tokens with no derivation, while the plain 18 is proved against the
