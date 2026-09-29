@@ -885,9 +885,24 @@ struct SparseAcceptSuite {
         // The acceptance rate is the half of this case that can fail on its own. The distribution
         // check above would still pass an accept rule that never accepts, because the residual
         // normalize(max(0, p - q)) is p on its own whenever q is a point mass. So the rate is
-        // predicted independently -- P(accept) = 1 - TV(p, q), from the rejection-sampling identity
-        // (Leviathan et al. 2302.01318 Thm 1) -- and asserted here. A rule that always accepted, or
-        // never accepted, is now caught.
+        // predicted independently and asserted here. A rule that always accepted, or never
+        // accepted, is now caught.
+        //
+        // The prediction is P(accept) = 1 - TV(p, q), from the rejection-sampling identity
+        // (Leviathan et al. 2302.01318 Thm 1: P(x) = min(p,q) + max(0, q - p) = q, for any p and q).
+        // Per token, E[min(1, p(X)/q(X))] = sum_x min(q(x), p(x)) = 1 - TV(p, q). For the point mass
+        // used below that reduces to p of the proposed token, which is the whole reason the check is
+        // not circular: it is computed from p and q directly, never from the accept rule.
+        //
+        // Two tokens is a support-restricted p, which is the case the theory handles by restriction
+        // rather than by a different identity: 2606.30265 assumes p(v) > 0 on the full vocabulary and
+        // notes the arguments extend to zero coordinates "by restricting to the support of p". A
+        // top_k/top_p truncated p is already exactly that restriction, so the truncated and
+        // renormalized distribution the kernel builds is the correct p here, not an approximation.
+        //
+        // The same property is gated the same way elsewhere: vLLM ships a "Rejection Sampler
+        // Convergence" test, and 2607.17283 gates on an emitted-token marginal chi-square against the
+        // target. Both are this case.
         double total_variation = 0.0;
         for (std::size_t t = 0; t < static_cast<std::size_t>(kSparseTokenDomain); ++t) {
             // q is a point mass on reference.ids[0], so the two bins where they differ carry it all.
