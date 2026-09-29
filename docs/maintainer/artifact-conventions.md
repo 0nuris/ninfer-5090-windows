@@ -105,6 +105,36 @@ rounding into the NVFP4 result.
 
 ## 2. Imported words are copied, local words are proven
 
+### The calibration corpus is the creator's, and that is policy rather than a note
+
+A coding-first corpus was proposed on 2026-09-29 on the grounds that this port serves a coding
+assistant, and declined: **this port always calibrates with the original creator's corpus.**
+`tools/release/check_calibration_corpus.py` enforces it on every commit, alongside the doc-link and
+profile gates.
+
+The provenance cannot be checked against a public tree. The script the corpus note names as its
+source, `calibrate_nvfp4full.py`, is absent from both `Neroued/ninfer` (1,907 entries) and
+`cometkim/ninfer` (1,900), so a byte pin is the strongest guarantee available. What the pin
+establishes is that the corpus has not changed since `46e1309f`; it does not establish that those ten
+documents are what that script read. The evidence that they are the creator's is the one recorded in
+[perplexity-baseline.md](../perplexity-baseline.md): the same corpus and the same arithmetic
+reproduce the published `nvfp4full` divisors.
+
+Two details of the gate are worth knowing before changing any of this. The pin is over
+newline-normalized bytes, because the working copy is CRLF (11,731 bytes) and the index is LF
+(11,716), so a raw pin reads one value here and another in a clean checkout — a pin that flips on a
+fresh clone is a gate people learn to bypass. And the policy statement cannot live in the corpus
+file's own `note` field, because those bytes are what the pin covers; editing the note to record the
+decision would break the gate that enforces it.
+
+The gate also checks something the note never claimed: that `full_range` agrees across all three
+places that carry it. The corpus JSON states it but the converter never reads it, `calibration.py`
+has its own constant, and the encoder has a third. They orient one E2M1 block scale, and the
+2026-09-29 block-scale experiment changed two of the three at once. Had only the encoder moved, every
+large block's `s_block` would have reached `448 * 6/4 = 672` and clamped against the E4M3FN maximum,
+and the measurement would have been of the clamp rather than of the block scale. That coupling is read
+with `ast`, not a regex, because a regex over `FULL_RANGE` also matches the name in a comment.
+
 - Imported payloads are verified **word-for-word** against the source, including the fused-parent
   shared-divisor equality checks and the row transforms (attention q/gate per-head interleaving).
 - Locally encoded payloads are verified against the **documented encoder profile** *and* an

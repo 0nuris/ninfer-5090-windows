@@ -1,10 +1,12 @@
 #!/bin/sh
 # Run the release gates that are fast enough for every commit.
 #
-# Three checks, all seconds: documentation links resolve, the profile tables match the profile module
-# and the generated launchers, and the converter tests pass. Each has caught a real drift in this
-# repository -- a README quoting a digest the pins had moved past, a suite size that had drifted from
-# the baseline, a recipe defect -- and before this hook existed, nothing ran them automatically.
+# Four checks, all seconds: documentation links resolve, the profile tables match the profile module
+# and the generated launchers, the calibration corpus is still the one the artifact's creator used,
+# and the converter tests pass. Each has caught a real drift in this repository -- a README quoting a
+# digest the pins had moved past, a suite size that had drifted from the baseline, a recipe defect, a
+# block scale that one of its three carriers had moved without the others -- and before this hook
+# existed, nothing ran them automatically.
 #
 # Deliberately not here: the C++ suite (minutes, and it needs the GPU), the baseline gate (it runs
 # ctest), and compute-sanitizer (much slower again). Those belong at a push or in CI, which is why
@@ -48,10 +50,13 @@ gate() {
 
 gate "documentation links" "$PY" tools/release/check_doc_links.py
 gate "profile consistency" "$PY" tools/release/check_profile_consistency.py
+gate "calibration corpus" "$PY" tools/release/check_calibration_corpus.py
 echo "pre-commit: converter tests"
 # The doc-link test is named explicitly: tests/release also holds a ctest script that exits at import,
-# so collecting the directory would abort the run instead of adding to it.
-"$PY" -m pytest tests/convert tests/release/test_doc_links.py -q
+# so collecting the directory would abort the run instead of adding to it. The calibration-corpus test
+# is named for the same reason, and because a gate whose failure paths have never been run is
+# indistinguishable from one that always passes.
+"$PY" -m pytest tests/convert tests/release/test_doc_links.py tests/release/test_calibration_corpus.py -q
 echo "pre-commit: ruff"
 "$PY" -m ruff check tools tests --quiet
 echo "pre-commit: mypy"
