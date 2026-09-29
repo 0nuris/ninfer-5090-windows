@@ -28,9 +28,14 @@ same-day control. Recorded in `docs/perplexity-baseline.md`.
 
 ### 1b. Can a full-NVFP4-coverage artifact be built from NVIDIA's source?
 **Why:** the `nvfp4full` lane is built from `Qwen3.8-27B-NVFP4-unsloth`, a community quantization,
-and scores **5.002854**. The `nvfp4nvidia` lane is built from NVIDIA's ModelOpt output — which is the
-official stock, its 4.90168 sitting against the official 4.90169 on the same protocol — and scores
-**4.915181**. That is a **1.75 % quality gap** on the same protocol, on the same nominal model.
+and scores **5.002854** on 2026-09-28, **5.002854 -> 4.998419** on 2026-09-29. The `nvfp4nvidia` lane
+is built from NVIDIA's ModelOpt output — which is the official stock, its 4.90168 sitting against the
+official 4.90169 on the same protocol — and scores **4.915181** on 2026-09-28, **4.911188** on
+2026-09-29. That is a **1.75 % quality gap** on 2026-09-28 and **1.78 %** on 2026-09-29, on the same
+protocol, on the same nominal model. Both re-measurements are on the build carrying the `d44ab584`
+merge and are in `docs/perplexity-baseline.md`; the per-domain breakdown there shows the same four
+artifacts spanning 6.4 % on `chinese_reference` against 1.8 % overall, so this gap is a statement
+about the aggregate and understates the disagreement.
 The lane's name appears to describe a format property rather than a source, so the community
 checkpoint was probably chosen deliberately as the one permitting complete NVFP4 coverage. That
 reasoning is written down nowhere and has not been tested.

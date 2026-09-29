@@ -77,7 +77,8 @@ attention regression without a same-day control on the same artifact.
 **The `nvfp4full` lane is built from a community quantization and is measurably worse than the
 official one.** Its recipe is `qwen3_8_27b_nvfp4_unsloth` over `Qwen3.8-27B-NVFP4-unsloth`, while
 `nvfp4nvidia` is `qwen3_8_27b_nvfp4_nvidia` over NVIDIA's. On the same protocol the official source
-scores **4.915181 against 5.002854**, a 1.75 % gap. The name appears to describe a format property
+scores **4.915181 against 5.002854** on 2026-09-28, a 1.75 % gap, and **4.911188 against 4.998419**
+on 2026-09-29, a 1.78 % gap. The name appears to describe a format property
 rather than a source -- an earlier row reads "Swift, re-encoded with NVFP4-full's bf16 exceptions" --
 which would make the community checkpoint a deliberate choice as the one permitting complete NVFP4
 coverage. That reasoning is not written down anywhere and has not been tested. Whether a
@@ -94,6 +95,63 @@ is the like-for-like check: same text, same protocol, two artifacts. The full-co
 comparable with the `--quick` row, since the corpus subset differs. Give every row the date it was
 taken: the QUASAR figure and the official stock's full-corpus figure both failed to reproduce when
 re-measured, which is a claim about the revision, not about the arithmetic.
+
+## All four shipping artifacts, re-measured 2026-09-29 after the `d44ab584` merge
+
+Same protocol as the table above -- full corpus, fp8 KV, 1,044,876 tokens, 4096/2048 -- on build
+`4b3acfc2`, which is the merge of `upstream/dev` `d44ab584` (14 commits). Re-measurement was not
+optional: that merge changed the FP8 and NVFP4 linear routes and attention, so the 2026-09-28 column
+was pinned to a revision that no longer existed. The binary on disk was itself dated 2026-09-27, two
+days older than the merge, so measuring before rebuilding would have reported the pre-merge code under
+a post-merge heading. One recipe built and measured, in that order.
+
+| artifact | 2026-09-28 | 2026-09-29 | change |
+|---|---:|---:|---:|
+| NVIDIA ModelOpt (`nvfp4nvidia`) | 4.915181 | **4.911188** | -0.081 % |
+| Swift (`nvfp4swift`) | 4.931761 | **4.936397** | +0.094 % |
+| QUASAR QAT (`nvfp4qat`) | 4.997441 | **4.994346** | -0.062 % |
+| NVFP4-full (`nvfp4full`) | 5.002854 | **4.998419** | -0.089 % |
+
+**The merge is perplexity-neutral.** All four move within +/-0.1 %, which is inside this measurement's
+own spread: the `--quick` corpus is recorded elsewhere in this file as spanning 1.05 % between two
+runs of the same build. The sign differs per artifact, so this is noise around an unmoved centre, not
+a shared drift. The ranking is unchanged. The one derived figure that moves is the official-source
+gap quoted above, from 1.75 % to **1.78 %** (4.911188 against 4.998419).
+
+**The per-domain spread is far wider than the overall gap, and that is the argument for a per-domain
+instrument.** The evaluator already prints a per-domain breakdown, and it disagrees with the
+aggregate's ordering:
+
+| domain | nvidia | swift | qat | full | spread |
+|---|---:|---:|---:|---:|---:|
+| `chinese_reference` | 6.371428 | **6.229361** | 6.625568 | 6.509076 | 6.4 % |
+| `english_long_form` | 8.300561 | 8.350429 | **8.243521** | 8.304946 | 1.3 % |
+| `english_reference` | **6.459213** | 6.707160 | 6.718965 | 6.779242 | 5.0 % |
+| `ninfer_code` | 1.691042 | 1.690048 | **1.683223** | 1.691167 | 0.5 % |
+| `overall` | **4.911188** | 4.936397 | 4.994346 | 4.998419 | 1.8 % |
+
+Three things follow, and the first is the uncomfortable one. **The 1.8 % overall gap understates the
+real disagreement by 3.5x**: on `chinese_reference` the same four artifacts span 6.4 %, and Swift
+beats QUASAR there by 5.9 % while sitting 1.2 % *behind* it overall. **No artifact is best
+everywhere**: nvidia takes the overall and both English domains, swift takes Chinese by a clear
+margin, qat takes code, and the code column is three orders of magnitude tighter in spread than
+Chinese. **The aggregate is not a summary of the four domains** -- it is a token-weighted mean that
+lets one domain's ordering decide the headline. Any claim of the form "lane X is better quality"
+should name the domain, because on this evidence the answer changes with it.
+
+That is also why the missing instrument is per-domain **KL against the BF16 reference** rather than
+more overall perplexity: `qwen3_8_27b_nvfp4.v3.ninfer` at bf16 KV reads 4.89838, and a per-domain KL
+to it would say which domain each artifact's quantization actually damaged, which perplexity's
+ordering cannot.
+
+**Not re-measured here, and therefore suspect.** The official stock `qwen3_8_27b_nvfp4.v3.ninfer`
+(4.90169 full corpus) was not in this run, so that row and the comparison at the head of this section
+still rest on 2026-09-24. `tools/release/profiles.py` carries decode `tok` and acceptance figures per
+lane; those are decode throughput from `v3_profile_matrix.py`, a different instrument from the
+*scoring* rate reported here (5,904-6,644 tok/s across these four runs), and they are **not** covered
+by this re-measurement. The merge changed linear routes those figures depend on, so they need a bench
+run before any of them is cited again. All four reports are persisted under
+`profiles/perplexity/qwen3.8-27b/`, one directory per run.
 
 ## A searched NVFP4 block scale is worse, and the weight error says nothing about it
 
