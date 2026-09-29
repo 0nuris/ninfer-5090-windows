@@ -285,7 +285,7 @@ release surface is documented in the Windows section of `README.md`. There are t
 `build/` for the apps, and `build-test/` for the suite the release gate runs
 (`ctest --test-dir build-test`).
 
-Thirty-five rules, each earned by a failure rather than chosen:
+Sixty-one rules, each earned by a failure rather than chosen:
 
 - **Run a verification recipe through the recipe.** `ctest --test-dir build-asan -R <broad regex>`
   pulls in device tests, which ASan cannot instrument and which hang: one such run burned fifty
@@ -645,3 +645,54 @@ Thirty-five rules, each earned by a failure rather than chosen:
   re-read the file with whatever actually consumes it. Five files carried BOMs into a commit this way
   before the audit found them; audit the *committed* files too, because `git status` no longer lists
   them.
+- **Compute a tool's memory cost before running it, and refuse the run when it is over budget.** On
+  2026-09-29 a new artifact verifier exhausted this 47.8 GiB machine and took it down. Two defects,
+  both arithmetic that was available before the run and not done: the NVFP4 parent was assembled from
+  nested Python lists at a **measured 28 bytes per element** (4.6 GiB for the lane's largest parent
+  alone), and every decoded parent was cached for the whole run, so the lane wanted **688 GiB**. The
+  rule is not "be careful with memory" -- it is that a per-element cost times a count is a number, and
+  the number comes before the command. `tools/convert/verify_artifact.py` now prints a projected peak
+  from the directory alone and **refuses `--values` before decoding anything** if it is over
+  `--max-peak-gib`. The vectorized float32 form measures 1.65 GiB against a 4 GiB budget. Anything
+  that walks a multi-gigabyte artifact gets the same pre-flight, because the failure mode is a dead
+  machine rather than a raised exception.
+- **A memory guard that reports zero is a broken guard, and must fail rather than pass.** The first
+  probe for that verifier sampled the child process's working set from the parent and printed
+  `0.00 GiB` for a child that finished in 0.18 s -- a plausible zero from a sampler that never caught
+  the process, and a failure path that returned 0.0 on a `GetProcessMemoryInfo` error. A guard that
+  passes on a non-positive reading passes exactly the case it exists to catch, so the child now reads
+  its **own** `PeakWorkingSetSize` through ctypes with explicit `argtypes` (without them ctypes
+  truncates the handle and the call fails), and a reading at or below zero is a hard failure.
+  `Get-Process` polling is not a substitute: it samples, and a fast child is invisible to it.
+- **The Python directory is not the C++ one; read the schema you are coding against.** Writing
+  `tools/convert/verify_artifact.py` against `artifact::Binding` produced `binding.parts`,
+  `part.object.index` and `part.begin`, none of which exist. The Python side is plain dicts --
+  `{"object": id}` or `{"parts": [{"object": id, "range": [begin, end]}]}` -- with **element** ranges
+  rather than byte ranges, and `uses` a tuple of dicts rather than a keyed map. The C++ structs in
+  `src/artifact/schema.h` are a richer form of the same data, not the same data, so reading them is
+  not reading the target. Three crashes and a rewrite came from that one assumption; the four fixes
+  after it (`SafetensorsSource(path)` is a context manager and has no `.open`; a recipe needs a real
+  `Recipe(model)` and not `None`; `dflash`/`dflash2` are `companions` and not `sources`; and a script
+  run as `__main__` needs absolute imports) were each one more place the same habit would have caught.
+- **A binding is usually a slice of a fused parent, and NVFP4 cannot decode a slice.** 409 of 1,513
+  bindings cover part of a larger packed parent -- `dflash2/layers/0/attention/query` is 4096 rows of a
+  6144-row object, because query, key, value and output share one parent whose 128-row tiles carry the
+  block scale. Asking the source for the slice's own row count, which is the obvious first thing to
+  write, asks it for 20,971,520 elements of a 31,457,280-element parent and raises. The parent is
+  decoded once and the slice taken from the result, and the slice geometry is read from the binding's
+  `range` rather than from the object's shape.
+- **An identifier that encodes a format hint is not interchangeable with one that does not.** 558
+  dflash2 sites reported `missing source tensor 'layers.0.self_attn.k_proj.weight_packed'` because the
+  verifier passed `format="nvfp4"` to a factory whose source is **Q8-packed upstream** -- the hint made
+  it look for packed weights that are not in that checkpoint. The recipe's own call is
+  `model.source(name, store)` with no hint for a locally encoded site. Worse, the call *succeeded* and
+  only `values()` raised, so a mapping that returned an object was not evidence the hint was right: a
+  store is accepted only once it can also produce values. The first fix attempted for this was based
+  on a wrong hypothesis and produced byte-identical output, and only reading `__main__.py` and
+  reproducing the recipe's call in isolation found it.
+- **A failing expectation is as much a defect as a failing tool.** Ten tests written alongside that
+  verifier had three wrong expectations, and the tool was right every time: `0x3C` is 1.5 in E4M3FN
+  and not 1.0 (mantissa 4), `0x7F` *raises* rather than returning NaN, and `0x7E` has high nibble 7, so
+  it is (-4, +6) while `0xFE` is the negative pair. Each was caught only because the expectation was
+  written from the format's definition instead of from what the code happened to produce -- a recorded
+  output would have recorded the bug. The grid is a table, not a magnitude list.
