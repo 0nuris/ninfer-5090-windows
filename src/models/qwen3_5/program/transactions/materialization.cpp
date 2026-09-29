@@ -1,4 +1,4 @@
-﻿#include "models/qwen3_5/program/program_impl.h"
+#include "models/qwen3_5/program/program_impl.h"
 #include "models/qwen3_5/program/context_work.h"
 #include "models/qwen3_5/program/context.h"
 

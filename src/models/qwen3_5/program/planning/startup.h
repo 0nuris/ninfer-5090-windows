@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "models/qwen3_5/program/internal.h"
 
 #include "core/cyclic_kv_cache.h"

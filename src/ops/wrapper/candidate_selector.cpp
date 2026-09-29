@@ -1,4 +1,4 @@
-﻿#include "ninfer/ops/candidate_selector.h"
+#include "ninfer/ops/candidate_selector.h"
 
 #include "ops/candidate_selector/bf16/candidate_selector_path_plan.h"
 #include "ops/candidate_selector/nvfp4/candidate_selector_path_nvfp4.h"

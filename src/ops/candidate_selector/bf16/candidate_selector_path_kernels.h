@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "core/weight.h"
 #include "ops/candidate_selector/bf16/candidate_selector_path_plan.h"
 

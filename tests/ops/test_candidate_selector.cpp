@@ -1,4 +1,4 @@
-﻿#include "ninfer/ops/candidate_selector.h"
+#include "ninfer/ops/candidate_selector.h"
 
 #include "ops/op_tester.h"
 #include "core/decode_graph.h"

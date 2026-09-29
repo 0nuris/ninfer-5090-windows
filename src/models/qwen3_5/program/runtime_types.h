@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "models/qwen3_5/frontend/frontend.h"
 #include "models/qwen3_5/program/program.h"
 

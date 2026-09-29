@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "artifact/materializer.h"
 #include "artifact/reader.h"

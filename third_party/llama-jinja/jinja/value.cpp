@@ -1,4 +1,4 @@
-﻿#include "runtime.h"
+#include "runtime.h"
 #include "unicode.h"
 #include "value.h"
 

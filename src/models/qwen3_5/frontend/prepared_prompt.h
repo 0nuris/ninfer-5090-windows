@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "runtime/contract/resources.h"
 
