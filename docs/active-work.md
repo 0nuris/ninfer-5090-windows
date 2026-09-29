@@ -301,6 +301,92 @@ way.
 ---
 ---
 
+### 13. Test-suite review: one real coverage gap found and closed, and two of my own claims were wrong
+**2026-09-29, after the `d44ab584` merge. The suite is green at 133/135; the two failures are
+`dflash_real` and `moe_real`, which fail by construction because this product ships no `dflash`
+component and no 35B-A3B MoE checkpoint. `check_test_baseline.py` GATE PASSED.**
+
+**The gap: 265 lines of shipped kernel with no unit coverage.** `candidate_selector_path` dispatches
+on `predecessor_codebook.qtype` alone, so the NVFP4 route runs whenever the predecessor is NVFP4. It
+is a separate kernel set -- a direct walk and a lattice pair -- and `test_candidate_selector.cpp`
+built only `QType::BF16`, so none of it was reachable from a test. It now sweeps kSteps 1..15, which
+crosses the route boundary at kSteps<=4 (direct walk) and above it (lattice pair).
+
+The oracle is independent where independence is possible. E2M1 and E4M3FN are decoded in the test
+from the formats' own definitions rather than by calling the device codec, so this is a third
+implementation agreeing with the kernel and with `tools/artifact/formats.py` on the converter side.
+The scale plane is addressed with the canonical `nvfp4_scale_byte_offset` expression, while the kernel
+carries its own hand-written copy in `codebook_scale_offset`; three copies agreeing is evidence, and
+the limit is stated in the test rather than glossed, because all three implement one convention and a
+wrong convention agreed upon would still pass. One asymmetry is modelled rather than smoothed over:
+the kernel rounds the successor row to bf16 and leaves the predecessor in fp32, so a test treating
+both alike would fail on rounding noise rather than on a defect.
+
+**The assertion was falsified before it was trusted, and the first attempt was invalid.** Perturbing
+the fixture's scale-word table changed nothing, because that table feeds both the bytes the kernel
+reads and the oracle's expectation, so both moved together -- self-consistency, not an oracle.
+Perturbing only the oracle's E2M1 magnitude (1.5 -> 1.6) fails as it should, with a localised
+diagnostic on the lattice route. A test that cannot fail is worse than no test.
+
+**The new coverage found a real defect, which is the point of having it.** Each codebook is validated
+independently by `require_codebook` and the route is chosen from the predecessor alone, so an NVFP4
+predecessor with a BF16 successor passed validation and reached the NVFP4 kernel, which dereferenced
+the successor's null `scales` pointer: an illegal access at 0x38AC, which aborts the process rather
+than failing the request. compute-sanitizer named the frame (`selector_walk_nvfp4_kernel` via
+`score_row` at `candidate_selector_path_nvfp4.cu:108`) and a temporary probe printing the pointers
+confirmed the main loop's own operands were correct, which is what attributed the fault to the mixed
+case rather than to the new test. The wrapper now requires the two qtypes to match. Both codebooks
+come from one artifact in production, so the guard costs nothing, and
+`ninfer_dflash2_nvfp4_routes_test` still passes, which is the evidence that the real route is
+unaffected. The test asserts the refusal, so the hole cannot reopen silently.
+
+A second, smaller inconsistency is recorded and not fixed, because it is a wrong-value bug rather
+than a fault and fixing it changes shipped arithmetic: `codebook_scale_offset` (predecessor) uses the
+canonical `(token/128)*4*512 + (group/4)*512 + in_tile + group%4`, while the successor staging inside
+`score_row` uses `(token/128*4 + lane)*512 + in_tile`, treating `lane` as the tile index instead of
+`group/4`. The two agree only for group 0. The new test now covers this path, so the discrepancy is
+visible rather than latent; it needs a decision about which is correct before anything is changed.
+
+**The golden that had no in-tree anchor: labelled, not invented.** `test_engine_prefix_real.cpp`
+asserted the thinking prompt at 58 tokens with no derivation, while the plain 18 is proved against the
+reference tokenizer by an exact id vector. It cannot be promoted to the same status, and the test now
+says so: the no-thinking render has an external reference because `test_frontend.cpp` pins it byte
+for byte, but the thinking prompt's preamble is this port's own template addition, so the reference
+tokenizer never produced that string. The totals are asserted separately so a failure localises to
+the preamble rather than to an unexplained sum, and a third assertion rejects a thinking render that
+is not longer than the plain one -- a renderer fault that would otherwise be misreported as a
+template edit.
+
+**The timeout exposure I reported does not exist.** I said the attention test was at 96% of a 900 s
+gate timeout and quoted a justification for the 900 s value. Both were wrong: no `TIMEOUT` property is
+set anywhere in the test tree, so the limit is ctest's 1500 s default, and no comment in the tree
+mentions 262 s. The test measures 885.04 s, which is 59% of the default. Neither the false claim nor
+its fabricated citation reached a file, so the correction is this paragraph.
+
+**The per-storage split cost is now measured rather than unknown.** Upstream deliberately consolidated
+the two per-storage ctest wrappers into one invocation taking `--kv-dtype`, because the wrappers had
+to be listed in the baseline and skipped individually. Whether splitting them back would duplicate
+CUDA setup was the open question. Measured, per storage: bf16 122.6 s, int8 147.6 s, nvfp4 180.7 s,
+k8v4 211.1 s, fp8 222.2 s -- and the five separate runs sum to 884.2 s against the consolidated
+885.04 s, a difference of 0.8 s. The shared setup is therefore immaterial, and a split would be
+genuinely balanced, taking the longest entry from 885 s to 222 s. It is still not worth doing: there is
+no timeout exposure at 59% of the default, the split re-creates the per-test baseline bookkeeping
+upstream removed on purpose, and the measured saving is zero. Recorded so the next reader does not
+re-derive it, and so nobody repeats the 900 s claim.
+
+**Reviewed and found sound.** All fifteen shared test files that genuinely diverge from upstream were
+reviewed hunk by hunk: zero hard coverage weakenings. Three soft changes are each deliberate with a
+justification that checks out -- among them `test_materialization_budget.cpp`, where the inputs moved
+from `80'000 ms` to `100 ms` and both clamp to the same 5 ms grant, so the renewal assertions are
+untouched. Also verified field by field: the test's BF16 codebook `Weight` matches what production
+materialises in `weight_view.cpp`, including the ten fields production leaves at defaults by
+returning early for `Contiguous`. And the `try/catch` added to `test_engine_dflash_real.cpp` does
+work -- it was an unhandled exception reaching `std::terminate`, not a `noexcept` frame, and
+`terminate` calling `abort()` is what produced the `0xC0000409` that named nothing; the test now
+prints the engine's own `missing component dflash`.
+
+---
+
 ## Closed — do not reopen
 
 Each of these was investigated and settled. They look like open work and are not.

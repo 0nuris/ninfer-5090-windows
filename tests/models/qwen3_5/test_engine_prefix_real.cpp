@@ -259,20 +259,40 @@ int exercise_registered_frontend(const ninfer::Engine& engine) {
                   << reference_ids.size() << " tokens, got " << render_ids.size() << "\n";
         ++failures;
     }
-    // The reference renders these prompts at 58 and 18 tokens. Both counts read one higher while the
-    // artifact's embedded template carried a UTF-8 BOM, which the renderer emitted as the first
-    // character of every prompt; the loader now strips it (see test_frontend.cpp). The thinking golden
-    // read 16 before the template gained its reasoning-effort preamble.
+    // The two prompts differ only in enable_thinking, so the 40-token difference is the cost of the
+    // reasoning-effort preamble the template carries. Asserting the two totals separately is what
+    // makes this a check rather than a bare claim: the plain 18 is proved against the reference
+    // tokenizer by the id pin above, so a failure of the thinking total localises to the preamble
+    // rather than to an unexplained sum.
+    //
+    // This is the weaker of the two checks and is labelled as such. The no-thinking render has an
+    // external reference -- test_frontend.cpp pins it byte for byte, because the reference produces
+    // it. The thinking prompt has none: the preamble is this port's own template addition, so the
+    // reference tokenizer never produced this string. The 58 is therefore a regression pin taken from
+    // this product at a recorded revision, not an independent oracle, and no assertion here can
+    // promote it to one. Both totals read one higher while the artifact's embedded template carried
+    // a UTF-8 BOM that the renderer emitted as the first character of every prompt; the loader now
+    // strips it (see test_frontend.cpp).
     const auto thinking_tokens = engine.count_tokens(chinese_chat(true));
     const auto plain_tokens    = engine.count_tokens(chinese_chat(false));
-    if (thinking_tokens != 58) {
+    constexpr std::uint32_t kPlainGolden    = 18;
+    constexpr std::uint32_t kThinkingGolden = 58;
+    if (thinking_tokens != kThinkingGolden) {
         std::cerr << "registered tokenizer/chat template changed the thinking prompt golden: expected "
-                  << 58 << ", got " << thinking_tokens << "\n";
+                  << kThinkingGolden << ", got " << thinking_tokens << "\n";
         ++failures;
     }
-    if (plain_tokens != 18) {
+    if (plain_tokens != kPlainGolden) {
         std::cerr << "registered tokenizer/chat template changed the no-thinking prompt golden: "
-                  << "expected " << 18 << ", got " << plain_tokens << "\n";
+                  << "expected " << kPlainGolden << ", got " << plain_tokens << "\n";
+        ++failures;
+    }
+    if (thinking_tokens <= plain_tokens) {
+        // The preamble can only add tokens, so a total at or below the no-thinking golden is a
+        // renderer fault rather than a template edit, and without this it would be misreported as
+        // one. Verified: 58 > 18 here, and the branch is what a shorter render would take.
+        std::cerr << "thinking prompt did not render longer than the no-thinking prompt: "
+                  << thinking_tokens << " <= " << plain_tokens << "\n";
         ++failures;
     }
     return failures == 0 ? 0 : 1;
