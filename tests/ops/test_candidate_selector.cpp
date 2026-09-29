@@ -1,5 +1,6 @@
 #include "ninfer/ops/candidate_selector.h"
 
+#include "ops/candidate_selector/bf16/candidate_selector_path_plan.h"
 #include "ops/op_tester.h"
 #include "core/decode_graph.h"
 
@@ -10,6 +11,7 @@
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <set>
 #include <span>
 #include <stdexcept>
@@ -624,6 +626,335 @@ int run(bool ties = false, bool dependent = false) {
     return failures;
 }
 
+// ---------------------------------------------------------------------------
+// NVFP4 codebook route.
+//
+// candidate_selector_path dispatches on predecessor_codebook.qtype alone, so the NVFP4 route runs
+// whenever the predecessor is NVFP4. It is a separate 265-line kernel set -- a direct walk and a
+// lattice pair -- and the BF16 cases above cannot reach it, so without these cases the whole branch
+// ships untested.
+//
+// The oracle below is independent of the kernel in the two places independence is possible:
+//
+//   * E2M1 and E4M3FN are decoded here from the formats' own definitions rather than by calling the
+//     device codec. The same two definitions exist in tools/artifact/formats.py on the converter
+//     side, so this is a third implementation agreeing with two others, not a transcription.
+//   * The scale plane is addressed with the canonical nvfp4_scale_byte_offset expression from
+//     ops/linear/nvfp4/nvfp4_codec.cuh. The kernel carries its own hand-written copy of that
+//     expression in codebook_scale_offset; this is a third copy. Agreement is evidence, and the
+//     limitation is stated rather than glossed: all three implement one convention, so a wrong
+//     convention agreed upon would pass. What this does rule out is a kernel that decodes a
+//     correctly-laid-out codebook wrongly.
+//
+// One asymmetry is load-bearing and easy to get wrong, so it is modelled rather than smoothed over:
+// the kernel rounds the successor row to bf16 after scaling (__float2bfloat16_rn) and leaves the
+// predecessor in fp32. A test that treated both as fp32 would fail on rounding noise rather than on
+// a defect, and one that treated both as bf16 would silently pass a predecessor that over-rounds.
+
+// The E2M1 magnitudes, indexed by the low three bits of the nibble.
+constexpr float kE2M1Magnitudes[8] = {0.0F, 0.5F, 1.0F, 1.5F, 2.0F, 3.0F, 4.0F, 6.0F};
+
+float decode_e2m1_nibble(unsigned nibble) {
+    return std::copysign(kE2M1Magnitudes[nibble & 0x7U], (nibble & 0x8U) != 0U ? -1.0F : 1.0F);
+}
+
+float decode_e4m3fn_word(unsigned word) {
+    const float sign      = (word & 0x80U) != 0U ? -1.0F : 1.0F;
+    const unsigned exponent = (word >> 3) & 0xFU;
+    const unsigned fraction = word & 0x7U;
+    if (exponent == 0xFU && fraction == 0x7U) return std::numeric_limits<float>::quiet_NaN();
+    if (exponent == 0) return sign * static_cast<float>(fraction) * 0x1p-9F;
+    return sign * (1.0F + static_cast<float>(fraction) / 8.0F) *
+           std::ldexp(1.0F, static_cast<int>(exponent) - 7);
+}
+
+// The registered K16M128x4 scale addressing: 512-byte tiles of 128 rows x 4 consecutive groups.
+std::size_t scale_byte_offset(std::int32_t row, std::int32_t group, std::int32_t k) {
+    return static_cast<std::size_t>((row / 128) * (k / 64) + group / 4) * 512 +
+           static_cast<std::size_t>(row & 31) * 16 +
+           static_cast<std::size_t>((row & 127) >> 5) * 4 + static_cast<std::size_t>(group & 3);
+}
+
+// Distinct per-token, per-rank codes that cover the whole E2M1 nibble space: the low three bits walk
+// the magnitudes and the sign bit follows the token, so two tokens with the same rank differ in sign
+// and neighbouring ranks differ in magnitude. That makes the edge strongly token-dependent, which is
+// what a draft-selection test needs -- a codebook that gave every token the same row would let a
+// kernel that read the wrong row pass.
+unsigned nvfp4_nibble(std::int32_t token, std::int32_t rank) {
+    return (static_cast<unsigned>(rank % 8)) | ((token & 1) ? 0x8U : 0x0U);
+}
+
+// Eight valid nonnegative E4M3FN scale words spanning 1.0 to 12.0, cycled by group and offset by
+// token parity so the scale plane is not uniform either.
+std::uint8_t nvfp4_scale_word(std::int32_t token, std::int32_t group) {
+    static constexpr unsigned kScaleWords[8] = {0x38, 0x3C, 0x40, 0x44,
+                                                0x48, 0x4C, 0x50, 0x54};
+    return static_cast<std::uint8_t>(kScaleWords[(group + (token & 1) * 3) % 8]);
+}
+
+struct Nvfp4Codebook {
+    std::vector<std::uint8_t> payload;
+    // Decoded rows for the tokens this run actually touches, keyed by token.
+    std::map<std::int32_t, std::vector<float>> predecessor_rows, successor_rows;
+    float predecessor_divisor = 0.0F, successor_divisor = 0.0F;
+};
+
+// The value the kernel computes for one rank, in the precision it actually holds it: fp32 for the
+// predecessor, bf16-rounded for the successor.
+float nvfp4_predecessor_value(const Nvfp4Codebook& book, std::int32_t token, std::int32_t rank) {
+    const auto row = book.predecessor_rows.find(token);
+    return row == book.predecessor_rows.end() ? 0.0F : row->second[rank];
+}
+
+float nvfp4_successor_value(const Nvfp4Codebook& book, std::int32_t token, std::int32_t rank) {
+    const auto row = book.successor_rows.find(token);
+    return row == book.successor_rows.end() ? 0.0F : row->second[rank];
+}
+
+Nvfp4Codebook build_nvfp4_codebook(std::span<const std::int32_t> tokens, bool predecessor) {
+    // Distinct divisors per codebook, so a route that swapped them is caught rather than tolerated.
+    const float divisor = predecessor ? 2.0F : 4.0F;
+    Nvfp4Codebook book;
+    book.predecessor_divisor = 2.0F;
+    book.successor_divisor   = 4.0F;
+
+    const std::size_t code_plane   = static_cast<std::size_t>(kCodebookRows) * kRank / 2;
+    const std::size_t plane_offset = ((code_plane + 255U) / 256U) * 256U;
+    const std::size_t scale_plane  = static_cast<std::size_t>(kCodebookRows) * kRank / 16;
+    book.payload.assign(plane_offset + scale_plane + sizeof(float), 0U);
+
+    std::uint8_t* codes  = book.payload.data();
+    std::uint8_t* scales = book.payload.data() + plane_offset;
+    auto& rows           = predecessor ? book.predecessor_rows : book.successor_rows;
+
+    for (const std::int32_t token : tokens) {
+        std::vector<float> decoded(kRank);
+        for (std::int32_t rank = 0; rank < kRank; rank += 2) {
+            const unsigned low  = nvfp4_nibble(token, rank);
+            const unsigned high = nvfp4_nibble(token, rank + 1);
+            codes[static_cast<std::size_t>(token) * (kRank / 2) + rank / 2] =
+                static_cast<std::uint8_t>((high << 4) | low);
+        }
+        for (std::int32_t group = 0; group < kRank / 16; ++group)
+            scales[scale_byte_offset(token, group, kRank)] = nvfp4_scale_word(token, group);
+        for (std::int32_t rank = 0; rank < kRank; ++rank) {
+            const float code =
+                decode_e2m1_nibble(nvfp4_nibble(token, rank)) *
+                decode_e4m3fn_word(nvfp4_scale_word(token, rank / 16));
+            // The successor is rounded to bf16 by the kernel; the predecessor is not.
+            decoded[rank] = predecessor ? code / divisor
+                                        : bf16_to_f32(f32_to_bf16(code / divisor));
+        }
+        rows.emplace(token, std::move(decoded));
+    }
+    return book;
+}
+
+std::vector<double> build_lattice_nvfp4(const std::vector<std::int32_t>& candidate_ids,
+                                        const std::vector<float>& unary_scores,
+                                        const std::vector<std::uint16_t>& projected_hidden,
+                                        const std::vector<std::int32_t>& anchors,
+                                        const Nvfp4Codebook& book) {
+    std::vector<double> lattice(static_cast<std::size_t>(kMaxBatch) * kSteps * kCandidates *
+                                kCandidates);
+    for (std::int32_t batch = 0; batch < kMaxBatch; ++batch)
+        for (std::int32_t step = 0; step < kSteps; ++step)
+            for (std::int32_t predecessor_rank = 0; predecessor_rank < kCandidates; ++predecessor_rank) {
+                const std::int32_t predecessor =
+                    step == 0 ? anchors[batch]
+                              : candidate_ids[candidate_offset(batch, step - 1, predecessor_rank)];
+                for (std::int32_t candidate = 0; candidate < kCandidates; ++candidate) {
+                    const std::int32_t successor =
+                        candidate_ids[candidate_offset(batch, step, candidate)];
+                    double edge = unary_scores[candidate_offset(batch, step, candidate)];
+                    const std::size_t hidden_base =
+                        static_cast<std::size_t>(batch * kSteps + step) * kRank;
+                    for (std::int32_t rank = 0; rank < kRank; ++rank)
+                        edge += nvfp4_predecessor_value(book, predecessor, rank) *
+                                static_cast<double>(bf16_to_f32(projected_hidden[hidden_base + rank])) *
+                                nvfp4_successor_value(book, successor, rank);
+                    lattice[lattice_offset(batch, step, predecessor_rank, candidate)] = edge;
+                }
+            }
+    return lattice;
+}
+
+int run_nvfp4() {
+    const std::vector<std::int32_t> candidate_ids    = make_candidate_ids();
+    std::vector<std::uint16_t> projected_hidden      = make_projected_hidden();
+    const std::vector<std::int32_t> anchors          = make_anchors();
+    const std::vector<std::int32_t> base_positions   = make_base_positions();
+    const std::vector<std::int32_t> tokens           = accessed_tokens(candidate_ids, anchors);
+    const Nvfp4Codebook book = build_nvfp4_codebook(tokens, true);
+    // The successor is the same layout with its own divisor; rebuild it rather than sharing rows.
+    const Nvfp4Codebook successor_book = build_nvfp4_codebook(tokens, false);
+
+    std::vector<float> unary_scores;
+    std::vector<double> lattice;
+    bool stable = false;
+    const std::vector<ops::SamplingConfig> greedy_probe(kMaxBatch);
+    for (std::uint32_t salt = 0; salt < 64; ++salt) {
+        unary_scores = make_unary_scores(salt);
+        lattice      = build_lattice_nvfp4(candidate_ids, unary_scores, projected_hidden, anchors,
+                                           [&] {
+                                               Nvfp4Codebook merged = book;
+                                               merged.successor_rows = successor_book.successor_rows;
+                                               return merged;
+                                           }());
+        const auto probe = walk_oracle(candidate_ids, lattice, greedy_probe, base_positions);
+        stable           = true;
+        for (int b = 1; b < kMaxBatch; b += 2) stable &= probe.minimum_decision_margin[b] > 5.0e-4;
+        if (stable) break;
+    }
+    if (!stable) throw std::runtime_error("could not construct a stable NVFP4 selector fixture");
+    const auto configs = choose_configs(candidate_ids, lattice, base_positions);
+    const auto expected = walk_oracle(candidate_ids, lattice, configs, base_positions);
+
+    Nvfp4Codebook merged       = book;
+    merged.successor_rows      = successor_book.successor_rows;
+
+    const auto codebook_weight = [&](const Nvfp4Codebook& source, float divisor) {
+        Weight weight{};
+        weight.payload      = source.payload.data();
+        weight.payload_bytes = source.payload.size();
+        weight.qtype        = QType::NVFP4;
+        weight.layout       = QuantLayout::BlockScaleK16M128x4;
+        weight.scale_dtype  = DType::FP8_E4M3FN;
+        weight.group_size   = 16;
+        weight.group        = 16;
+        weight.ndim         = 2;
+        weight.n            = kCodebookRows;
+        weight.k            = kRank;
+        weight.shape[0]     = kCodebookRows;
+        weight.shape[1]     = kRank;
+        weight.padded_shape[0] = kCodebookRows;
+        weight.padded_shape[1] = kRank;
+        weight.qdata        = source.payload.data();
+        weight.scales       = source.payload.data() +
+                              (((static_cast<std::size_t>(kCodebookRows) * kRank / 2 + 255U) / 256U) *
+                               256U);
+        weight.weight_scale_divisor = divisor;
+        weight.input_scale_divisor  = 1.0F;
+        return weight;
+    };
+
+    DeviceBuffer candidate_device = to_device(candidate_ids);
+    DeviceBuffer unary_device     = to_device(unary_scores);
+    DeviceBuffer hidden_device    = to_device(projected_hidden);
+    DeviceBuffer anchor_device    = to_device(anchors);
+    DeviceBuffer position_device  = to_device(base_positions);
+    DeviceBuffer config_device    = to_device(configs);
+    DeviceBuffer predecessor_device(book.payload.size());
+    DeviceBuffer successor_device(successor_book.payload.size());
+    predecessor_device.copy_from_host(book.payload.data(), book.payload.size());
+    successor_device.copy_from_host(successor_book.payload.data(), successor_book.payload.size());
+
+    Weight predecessor = codebook_weight(book, 2.0F);
+    Weight successor   = codebook_weight(successor_book, 4.0F);
+    predecessor.qdata  = predecessor_device.p;
+    predecessor.scales = static_cast<const std::uint8_t*>(predecessor_device.p) +
+                       (((static_cast<std::size_t>(kCodebookRows) * kRank / 2 + 255U) / 256U) * 256U);
+    predecessor.payload = predecessor_device.p;
+    successor.qdata     = successor_device.p;
+    successor.scales    = static_cast<const std::uint8_t*>(successor_device.p) +
+                       (((static_cast<std::size_t>(kCodebookRows) * kRank / 2 + 255U) / 256U) * 256U);
+    successor.payload   = successor_device.p;
+
+    int failures = 0;
+    for (int batch_size = 1; batch_size <= kMaxBatch; ++batch_size) {
+        const std::size_t draft_count = static_cast<std::size_t>(batch_size) * kSteps;
+        const std::size_t q_count     = draft_count * kCandidates;
+        GuardedDeviceBuffer draft_device(draft_count * sizeof(std::int32_t));
+        GuardedDeviceBuffer q_device(q_count * sizeof(float));
+        draft_device.fill(0xff);
+        q_device.fill(0xff);
+        Tensor ids(candidate_device.p, DType::I32, {kCandidates, kSteps, batch_size});
+        Tensor unary(unary_device.p, DType::FP32, {kCandidates, kSteps, batch_size});
+        Tensor hidden(hidden_device.p, DType::BF16, {kRank, kSteps, batch_size});
+        Tensor anchor(anchor_device.p, DType::I32, {batch_size});
+        Tensor position(position_device.p, DType::I32, {batch_size});
+        Tensor drafts(draft_device.data(), DType::I32, {kSteps, batch_size});
+        Tensor q(q_device.data(), DType::FP32, {kCandidates, kSteps, batch_size});
+        const auto capacity =
+            ops::candidate_selector_path_workspace_capacity_bytes(kSteps, kSteps, batch_size,
+                                                                  batch_size);
+        GuardedDeviceBuffer scratch(std::max<std::size_t>(capacity, 1));
+        WorkspaceArena workspace(DeviceSpan{scratch.data(), scratch.bytes()});
+        ops::candidate_selector_path(ids, unary, hidden, anchor, predecessor, successor, position,
+                                     static_cast<const ops::SamplingConfig*>(config_device.p),
+                                     drafts, q, workspace, nullptr);
+        cuda_synchronize();
+        const std::string label = "nvfp4 B=" + std::to_string(batch_size) + " K=" +
+                                  std::to_string(kSteps) + " route=" +
+                                  ops::detail::candidate_selector_path_route_name(kSteps, batch_size);
+        const auto actual_d = from_device<int>(draft_device.data(), draft_count);
+        const auto actual_q = from_device<float>(q_device.data(), q_count);
+        failures += verify_exact((label + " drafts").c_str(), actual_d,
+                                 std::vector<int>(expected.drafts.begin(),
+                                                  expected.drafts.begin() + draft_count));
+        failures += verify_pointwise(
+            (label + " q").c_str(), std::vector<double>(actual_q.begin(), actual_q.end()),
+            std::vector<double>(expected.probabilities.begin(),
+                                expected.probabilities.begin() + q_count),
+            kProbabilityCriterion);
+        failures += verify_draws(label, batch_size, candidate_ids, configs, base_positions,
+                                 actual_d, actual_q);
+        failures += draft_device.verify_guards(label + " drafts") +
+                    q_device.verify_guards(label + " q") + scratch.verify_guards(label + " workspace");
+    }
+
+    // A mixed pair passes require_codebook on both sides -- each is validated independently -- and
+    // the route is chosen from the predecessor alone, so an NVFP4 predecessor with a BF16 successor
+    // would reach the NVFP4 kernel and read the successor as packed E2M1. If that is not refused,
+    // this is a real defect and the test says so rather than passing.
+    {
+        Nvfp4Codebook bf16_source = successor_book;
+        bf16_source.payload.assign(static_cast<std::size_t>(kCodebookRows) * kRank * sizeof(std::uint16_t),
+                                  0U);
+        DeviceBuffer bf16_device(bf16_source.payload.size());
+        Weight bf16_successor{};
+        bf16_successor.payload      = bf16_device.p;
+        bf16_successor.payload_bytes = bf16_source.payload.size();
+        bf16_successor.qtype        = QType::BF16;
+        bf16_successor.layout       = QuantLayout::Contiguous;
+        bf16_successor.ndim         = 2;
+        bf16_successor.n            = kCodebookRows;
+        bf16_successor.k            = kRank;
+        bf16_successor.shape[0]     = kCodebookRows;
+        bf16_successor.shape[1]     = kRank;
+        bf16_successor.padded_shape[0] = kCodebookRows;
+        bf16_successor.padded_shape[1] = kRank;
+        bf16_successor.qdata        = bf16_device.p;
+        GuardedDeviceBuffer d1(1 * sizeof(std::int32_t)), q1(1 * kCandidates * sizeof(float));
+        Tensor t_ids(candidate_device.p, DType::I32, {kCandidates, kSteps, 1});
+        Tensor t_unary(unary_device.p, DType::FP32, {kCandidates, kSteps, 1});
+        Tensor t_hidden(hidden_device.p, DType::BF16, {kRank, kSteps, 1});
+        Tensor t_anchor(anchor_device.p, DType::I32, {1});
+        Tensor t_pos(position_device.p, DType::I32, {1});
+        Tensor t_d(d1.data(), DType::I32, {kSteps, 1}), t_q(q1.data(), DType::FP32, {kCandidates, kSteps, 1});
+        const auto mixed_capacity =
+            ops::candidate_selector_path_workspace_capacity_bytes(kSteps, kSteps, 1, 1);
+        GuardedDeviceBuffer sw(std::max<std::size_t>(mixed_capacity, 1));
+        WorkspaceArena ws(DeviceSpan{sw.data(), sw.bytes()});
+        bool refused = false;
+        try {
+            ops::candidate_selector_path(t_ids, t_unary, t_hidden, t_anchor, predecessor,
+                                         bf16_successor, t_pos,
+                                         static_cast<const ops::SamplingConfig*>(config_device.p), t_d,
+                                         t_q, ws, nullptr);
+            cuda_synchronize();
+        } catch (const std::invalid_argument&) {
+            refused = true;
+        }
+        if (!refused) {
+            std::cerr << "nvfp4 mixed codebooks: an NVFP4 predecessor with a BF16 successor was "
+                         "accepted and would be read as packed E2M1\n";
+            ++failures;
+        }
+    }
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -644,6 +975,9 @@ int main() {
             kSteps = 15;
             failures += run(false, true);
         }
+        // The NVFP4 route is only reachable with an NVFP4 predecessor, so it gets its own sweep
+        // across the route boundary: kSteps <= 4 takes the direct walk, above it the lattice pair.
+        for (kSteps = 1; kSteps <= 15; ++kSteps) failures += run_nvfp4();
         std::cout << (failures == 0 ? "OK" : "FAIL") << " candidate_selector_path\n";
         return failures == 0 ? 0 : 1;
     } catch (const std::exception& error) {

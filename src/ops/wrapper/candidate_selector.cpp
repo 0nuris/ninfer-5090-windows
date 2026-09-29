@@ -129,6 +129,16 @@ void candidate_selector_path(const Tensor& candidate_ids, const Tensor& unary_sc
     require_tensor(anchors, DType::I32, batch_size, 1, 1, 1, "anchors");
     require_codebook(predecessor_codebook, "predecessor_codebook");
     require_codebook(successor_codebook, "successor_codebook");
+    // Each codebook is validated on its own, and the route below is chosen from the predecessor
+    // alone, so a mixed pair passes validation and then reaches one kernel holding the other
+    // format's payload. Measured on sm_120a: an NVFP4 predecessor with a BF16 successor makes the
+    // NVFP4 kernel dereference the successor's null scales pointer, an illegal access 0x38AC into
+    // unmapped memory, which aborts the process rather than failing the request. The reverse reads
+    // packed E2M1 as bf16 and returns wrong drafts. Both codebooks come from one artifact in
+    // production, so requiring them to agree closes the hole at no cost.
+    if (predecessor_codebook.qtype != successor_codebook.qtype) {
+        throw std::invalid_argument("candidate_selector_path: codebook formats must match");
+    }
     require_tensor(base_positions, DType::I32, batch_size, 1, 1, 1, "base_positions");
     require_tensor(drafts, DType::I32, kSteps, batch_size, 1, 1, "drafts");
     require_tensor(proposal_q, DType::FP32, kCandidates, kSteps, batch_size, 1, "proposal_q");
