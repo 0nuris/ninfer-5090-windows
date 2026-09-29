@@ -143,8 +143,16 @@ def main() -> int:
                   "image" in (model.get("modalities", {}).get("input") or []))
             check(f"{profile['model_id']} output > thinking budget",
                   limit.get("output", 0) > 4096, str(limit.get("output")))
-            check(f"{profile['model_id']} defaults to no thinking",
-                  effort == "none", f"reasoningEffort={effort!r}")
+            # The lanes default to the model's own default reasoning effort. It used to be "none",
+            # which turned thinking off and therefore selected the non-thinking sampling preset --
+            # temperature 0.7, top_p 0.80, presence_penalty 1.5. That preset is the one this engine
+            # cannot serve correctly: the drafter reads only temperature and seed from the sampling
+            # config (candidate_selector_path.cu) while the verify path applies the penalty overlay
+            # (speculative_round.cuh), so a non-zero penalty makes the acceptance test compare two
+            # different distributions. Measured on QUASAR dflash2: 4.18 tokens per round at penalty 0
+            # against 2.45 at 1.5. The card also names xhigh the default, for complex analysis.
+            check(f"{profile['model_id']} defaults to the model's reasoning effort",
+                  effort == "xhigh", f"reasoningEffort={effort!r}")
 
     print("\n=== verifier case list ===")
     verifier = read(WT / "tools" / "release" / "verify_launchers_v3.py")
