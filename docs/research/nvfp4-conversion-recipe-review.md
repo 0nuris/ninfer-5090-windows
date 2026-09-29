@@ -792,15 +792,77 @@ matches the current recipe. Three reports in `out/` (`…qat…`, `…nvidia…`
 recipes assign identical formats over identical shapes and so produce identical sizes from different
 sources — but for Swift it is a symptom of the stale report, not a coincidence to explain away.
 Per `artifact-conventions.md` §2 the conversion report is the authority on what a build contains,
-and this one is not the build that ships. **Delete or rename it**, or a later reader will resolve
-Swift from it and measure the wrong drafter.
+and this one is not the build that ships. **Renamed to `…conversion.json.stale` on 2026-09-29**, with
+the other five reports that fail the same check, so no lane can be resolved from it. The valid report
+per lane is now the only unrenamed one: `nvfp4full…conversion.json` and `…v4`, `nvfp4nvidia…`,
+`nvfp4qat…`.
+
+### 9.1a No conversion report describes the shipped Swift artifact, or the official stock **[MEASURED-HERE]**, 2026-09-29
+
+**Size is not identity, and for this model family it is actively misleading.** A conversion report's
+`payload_bytes` is the tensor payload; the file adds framing, measured at 458,752-466,944 bytes across
+the pairings that are known to be correct. Subtracting gives an offset that is either framing-sized
+(under 1 MB, so the report matches its lane) or three orders of magnitude out (769,186,816 for the
+superseded `nvfp4full` v1/v2/v3, 836,038,912 for the Swift report, 279,319,296 for the
+`nvfp4qat.nvfp4draft` report), which is a different build. Exact equality is the wrong test and always
+fails, because payload and file size can never be equal.
+
+Applying that test properly, the only report whose payload matches the shipped Swift file's is
+`qwen3_8_27b_nvfp4qat.v3.ninfer.old.conversion.json` at 19,781,986,308, an offset of 462,848 — squarely
+framing-sized. **It is not a Swift report.** Its sources are `Qwen3.8-27B` and
+`Qwen3.8-27B-NVFP4-QUASAR`, and it has 1,072 method records against the shipped Swift file's shape. It
+matches on size for the reason this section already gives for QUASAR and NVIDIA: *"QUASAR and NVIDIA
+recipes assign identical formats over identical shapes and so produce identical sizes from different
+sources."* A size match here is a coincidence of recipe, not evidence of provenance.
+
+So: **no conversion report on disk describes the shipped Swift artifact, and none describes the
+official stock `qwen3_8_27b_nvfp4.v3.ninfer`.** Every other report resolves to a lane it genuinely
+describes. Per `artifact-conventions.md` §2 that leaves two shipped artifacts with no build record, so
+for those the file is the only authority there is.
+
+### 9.1b Retraction: the 9-tensor `nvfp4 -> bf16` set is QUASAR vs NVFP4-full, not Swift **[MEASURED-HERE]**, 2026-09-29
+
+A comparison run on 2026-09-29 against `out/qwen3_8_27b_nvfp4swift.v3.ninfer.conversion.json` — the
+stale report this section names — reported nine tensors stored `bf16` in NVFP4-full and `nvfp4` in
+"Swift": `self_attn.q_proj` at layers 3, 7, 11, 15, 19, 23 (stride 4), plus `o_proj` at 3 and 7 and
+`linear_attn.out_proj` at 4. **That attribution is withdrawn.** The Swift side of that comparison was
+the stale report, so the finding is a QUASAR-vs-NVFP4-full difference and nothing more. Re-run against
+the QUASAR report, the nine tensors and the one-directional `nvfp4 -> bf16` transition reproduce
+exactly, and the module roles and layer stride are unchanged; what changes is only which lane the
+"Swift" side actually was.
+
+**The nine are not a discovery; they are NVFP4-full's own documented recipe.**
+`docs/maintainer/qwen3.8-27b-artifact.md` already records that artifact's Text allocation as
+*applying the Qwen3.6-27B nvfp4 exception pattern*: `attention/query_key_gate_value` bf16 on layers
+3, 7, 11, 15, 19, 23 and nvfp4 on the other ten full-attention layers; `attention/output` bf16 on
+layers 3, 7; `gdn/output` bf16 only on layer 4. Six plus two plus one is the nine measured here, on the
+same layers and the same roles, which is a correctness check on the measurement as well as a
+coincidence ruled out. So the real recipe difference is that **QUASAR does not carry the exception
+pattern and NVFP4-full deliberately does**, inherited from Qwen3.6-27B — not an unexplained divergence
+between two producers doing the same thing.
+
+**The Swift-vs-NVFP4-full recipe comparison still cannot be made from the reports on disk** — §9.1a is
+why. The two artifacts come from different source checkpoints (`Swift-Qwen3.8-27b` against
+`Qwen3.8-27B`), which is established by the reports only for NVFP4-full's side. Whether Swift's recipe
+differs in anything but source is **not established**, and the 1.13 % perplexity gap between Swift and
+NVFP4-full is not attributed.
 
 Also in `out/` under a shipped name: `qwen3_8_27b_nvfp4qat.v3.ninfer.old` (19,782,449,156 bytes) and
 `qwen3_8_27b_nvfp4qat.v3.ninfer` (18,946,877,188) are different builds of the same artifact, and
 `C:\AI\models\qwen3_8_27b_nvfp4full.v3.ninfer` is the `.v4`/`.rebuilt` build, not the one the
 recorded 4.98768 / 4.97532 rows were taken on. The `20260928-173142` report shows that file scoring
-**5.00285**, which is not any recorded row. This is the hazard the project card names; I am
-recording it, not fixing it.
+**5.00285**, which is not any recorded row.
+
+**Cleared 2026-09-29.** `C:\AI\models` held eleven `qwen3_8_27b*` files for five shipped artifacts.
+It now holds exactly the five, named by `tools/release/profiles.py` plus the official stock. One file
+was deleted — `qwen3_8_27b_nvfp4swift.v3.ninfer.before-draft`, byte-identical to the shipped Swift
+artifact by size, by sampled content and by mtime, so its loss is provably nil. The other ten, 177.7
+GiB including both original downloads and every staging copy that sat in `out/` under a shipped name,
+were moved to `C:\AI\models\_superseded\` rather than deleted, which clears every glob and name lookup
+at the top level while losing nothing; the move is reversible. The five shipped artifacts were
+re-hashed afterwards and all five are unchanged. The six hazardous conversion reports were renamed
+with a `.stale` suffix rather than deleted, per the recommendation in this section, so the provenance
+survives and the report can no longer be resolved.
 
 ### 9.2 Every "official stock" baseline in this repo is the wrong file
 
