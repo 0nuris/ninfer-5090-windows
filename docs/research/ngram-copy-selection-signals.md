@@ -391,6 +391,38 @@ rounds spent on copy. Throughput gain over neural-only is
 
 > **`C = 1.057 · N`**, i.e. **`1 + 15c = 5.348`**, i.e. **`c = 0.290`**.
 
+#### 4.3.1 `c` is not a free parameter — it is `p` of the copied token
+
+Added 2026-09-28, from work on the accept path (`docs/active-work.md` item 11). The break-even above
+treats `c` as something to be measured or assumed. It is neither: it is pinned by the rejection
+sampling identity.
+
+A deterministic copy proposal is a **point mass**. The drafter proposes one token, so `q = 1` on that
+token and 0 elsewhere — which is a normalised distribution, so the identity applies. The accept test is
+`min(1, p/q)` with the correction `normalize(max(0, p - q))`, and `P(accept) = 1 - TV(p, q)`
+(Leviathan et al. 2302.01318 Thm 1). For a point mass that reduces to
+
+> **`c = P(accept) = 1 - TV(p, q) = p(copied token)`**
+
+— the target's own probability of the token being copied, and nothing else. Consequences:
+
+- **The break-even becomes measurable.** `c = 0.290` is then a threshold on the target's probability of
+  the copied token rather than on an unmeasurable gate statistic. Log `p` of the proposed copy token per
+  round and the break-even test becomes a direct comparison, with no dependence on the match-length
+  gate's unknown false-positive rate.
+- **It explains the shipped signal.** §1.1 gates on suffix match length and nothing else. A longer match
+  is a proxy for a higher `p`, which is why a 3-line mask over match length is a reasonable stand-in.
+  It also predicts where the proxy fails: it is weakest on exactly the borderline matches, which are the
+  ones that decide the break-even.
+- **It bounds what a copy drafter can do alone.** A point mass cannot exceed `p(token)`, so a
+  deterministic lookup is capped by how predictable the copy is. Beating that needs several candidates
+  carrying real probabilities rather than one token — STAND (`arXiv 2506.04708`) stores top-k indices
+  *and* their probabilities per n-gram for exactly this reason, and that is the difference between a
+  selector that can be grafted onto a neural drafter and one that cannot.
+- **Caveat on the framing.** This holds for the stochastic accept path. Under a greedy target
+  (`temperature = 0`) the accept test is an argmax match and the arithmetic does not apply, which is
+  also why the published 2-4x prompt-lookup gains are greedy-decode measurements.
+
 Two consequences, and the second is the useful one:
 
 - **The copy proposal has to be accepted at about 29 % — roughly half the neural drafter's

@@ -47,6 +47,22 @@ Review these before style. Each is a real project invariant, not a preference.
    the affected contract tests and a real artifact when semantics require it.
 6. **External contracts.** OpenAI/Anthropic protocol behavior is external: update the schema tests
    and `docs/serving.md` together.
+7. **Sampling and speculative semantics.** A distribution claim is not established by reading the
+   arithmetic. Two specific traps, both hit in one session:
+   - **Grade the severity, do not assume it.** The accept test is `min(1, p/q)` with a
+     `normalize(max(0, p - q))` correction, which holds for *any* normalised `q`. A drafter that
+     ignores `presence_penalty` therefore costs acceptance and cannot change what is sampled
+     (measured 4.18 vs 2.45 tokens per round; `P(accept) = 1 - TV(p,q)`). Calling that a correctness
+     defect was wrong. When `p` and `q` disagree, say which of the two facts you are reporting.
+   - **A control that passes for a structural reason is not a control.** At `top_k = 1` the support
+     is one token, so `p` is a point mass, so `p >= q` holds for every draft whatever `q` is and
+     accept-always is correct. Agreement at `top_k = 1` says nothing about the accept rule, and the
+     multi-token case is the only place its arithmetic can be wrong. Before reporting a control,
+     state what would have to be true for it to fail.
+   A per-decision test pins one seed and cannot see a distributional error at all. The accept rule is
+   covered by `accept_distribution_isolation_case`, which splits `extent=0` (samples from `p`, no
+   accept test) from `extent=1` (accept plus residual) and requires both to reproduce `p`; keep that
+   split when touching it.
 
 ## 3. C/C++ memory safety (Trail of Bits `c-review` taxonomy)
 
@@ -90,6 +106,20 @@ Review these before style. Each is a real project invariant, not a preference.
   preflight gaps.
 - Claiming an end-to-end improvement from an Op microbenchmark.
 - Rationalising a reading of the code instead of measuring it.
+- **A harness error reported as a product defect.** One session reported a disagreement between a
+  device and the suite's own oracle as a kernel-or-oracle divergence; it was the throwaway harness,
+  and the cause was never identified. Four more harness errors that session were caught before they
+  reached a report, which is the only reason the first one is the lesson: a draft that was
+  deterministically accepted so the branch under test never ran, Op-maintained token counts drifting
+  between trials, a probe that passed the wrong draft and seed to the oracle, and a scratch script
+  whose `cd` walked out of the repo so the suite's exit code came from a failed `call`. When a device
+  and an oracle disagree, attribute it before reporting it, and say "unattributed" rather than picking
+  the side that is easier to describe.
+- A failing test committed "because it documents a finding". A test that fails for an unattributed
+  reason is worse than no test; the finding belongs in `docs/active-work.md` with the reproduction.
+- A correction to a claim that has already been pushed. Do not rewrite published history — add a
+  commit that records the correction, and correct the comments and gates that carry the claim, since
+  those are what the next session reads.
 
 ## 7. Output
 

@@ -145,6 +145,33 @@ GDN replay and tree-aware target attention, each with a host oracle.
 **Expected value is low, and that is the finding, not a reason to skip it:** the selector's value is
 inversely proportional to drafter strength, and our shipping DFlash2 lanes accept 52-67%. The +55%
 reference was measured on a lane accepting 27%.
+
+**The research is already done and is better than anything I would add here.** Read
+`docs/research/ngram-copy-selection-signals.md` before starting: it establishes, from the
+implementations, that TensorRT-LLM's `SADraftEnhancer` is the *only* shipped copy-vs-neural selector
+across llama.cpp, vLLM, SGLang and TensorRT-LLM, that vLLM's combination is still unmerged, and that
+`use_sa_spec` is wired into exactly MTP, EAGLE 3 and PARD -- so **DFlash2 has no shipped precedent for
+this combination**, which is the reason the item is worth building rather than adopting. It also
+derives the break-even copy-acceptance rate (`c = 0.290`). Two of the three sibling notes are
+`ngram-drafting-designs.md` and `ngram-outside-github.md`.
+
+**The one thing that research note does not have, and it changes what to measure.** Its break-even
+leaves `c`, the copy-acceptance rate, as a free parameter and notes that no published number exists
+for the match-length gate's false-positive rate. `c` is not free. A deterministic copy proposal is a
+point mass -- `q = 1` on the copied token -- so the identity verified in item 11 gives
+`P(accept) = 1 - TV(p, q) = p(copied token)`. The copy-acceptance rate *is* the target's probability of
+the copied token. That is worth having for two reasons: it converts the break-even from a threshold on
+an unmeasured rate into a threshold on a quantity we can measure directly, and it explains why match
+length is the signal TRT-LLM gates on at all -- a longer suffix match is a proxy for a higher `p`. A
+match-length threshold is therefore a cheap, dataless stand-in for `p`, and the honest way to size it
+here is to measure `p` of the copied token and compare, rather than to port someone else's `4`.
+
+**One thing we should not copy.** TRT-LLM's MTP has `use_relaxed_acceptance_for_thinking`, which
+accepts a draft appearing in a `relaxed_topk` / `relaxed_delta` candidate set instead of applying
+`min(1, p/q)`. That is a biased acceptance, chosen to speed up the thinking phase. Our contract is
+lossless, so it is out of scope however well it performs, and adopting it would forfeit the property the
+digest-based control in the bench depends on.
+
 **Done when:** one DFlash2 lane is measured with and without the copy grafted, on copy-heavy traffic,
 against our own baseline. **"Built, measured, and not shipped" is an acceptable outcome** and should be
 reported as one.
@@ -169,38 +196,42 @@ artifacts with a documented way to be badly wrong and no measurement behind it.
 shipping lane, measuring perplexity and decode acceptance. Unlike the weight scale, the comparison
 needs a calibration corpus, so it is a real cost and not a free-at-runtime change.
 
-### 11. The sparse accept path is only oracle-checked at `top_k=1`, and it disagrees with the oracle above that
-**Found 2026-09-28, while auditing a claim of mine that turned out to be false. Unresolved.**
+### 11. The sparse accept path had no distributional test, and every sparse case used `top_k=1` - **DONE 2026-09-28**
+**Found while auditing a claim of mine that turned out to be false. The premise below was also false.**
 
 `tests/ops/test_speculative_round.cpp` compares the sparse accept device path against a host oracle
-(`sparse_accept_oracle` / `sparse_target_distribution`, FP64). **Every sparse case in the file sets
-`top_k = 1`** — `generated_general_case` and `sparse_general_mixed_case` both do — so the whole
-multi-token branch of the accept rule is unverified by the suite's own oracle. The production dflash2
-lane sends `top_k = 20`, which is the uncovered case.
+(`sparse_accept_oracle` / `sparse_target_distribution`, FP64). **Every sparse case in the file set
+`top_k = 1`** — `generated_general_case` and `sparse_general_mixed_case` both did — so the multi-token
+branch of the accept rule was unverified, and the production dflash2 lane sends `top_k = 20`.
 
-A throwaway case built to measure the emitted-token distribution (a real gap: the existing cases pin
-one seed and compare one decision, so they cannot see a distributional error) put the two sides side by
-side and they disagree:
+**What I first reported, and was wrong:** that a case I wrote showed the device and the oracle
+disagreeing at `top_k = 2`, with the device accepting the draft on 16384 of 16384 trials where the
+oracle expected about 47 %. That was my throwaway harness, not the engine and not the oracle. I never
+established what in the harness caused it and am not going to invent a reason.
 
-| configuration | device | host oracle |
-|---|---|---|
-| `top_k=1`, `top_p=1.0`, no penalty | agrees on every trial | agrees |
-| `top_k=2`, `top_p=1.0`, **no penalty at all** | accepted the draft on 16384 of 16384 trials | accepted on ~47 % |
+**What is actually true, measured.** `accept_distribution_isolation_case` separates the two halves of
+the path, because one comparison cannot tell them apart. With `extent` 0 there is no draft to accept, so
+the kernel samples straight from `p` with no accept test and no residual; with `extent` 1 the draft is
+accepted or rejected and the residual is drawn. Both must reproduce `p`. On a two-token support,
+`p = (0.5737, 0.4263)`, with a point-mass `q` on the more likely token:
 
-The `top_k=1` row is the control that says the harness is sound: the histogram, the chi-square and the
-oracle all agree exactly there (`chi2 = 0.0`). So this is not a broken harness. It appears as soon as
-the target's support has more than one token.
+| sub-run | result |
+|---|---|
+| `extent=0`, isolates the target distribution | `chi2(p) = 3.2` against a limit of 16, 0 tokens outside the support |
+| `extent=1`, isolates the accept rule and the residual | `chi2(p) = 0.3`, accept rate 2368/4096 = 57.8 % |
 
-**Which side is wrong is not established.** Two candidates, and I have no evidence favouring either:
-the kernel's accept/correction arithmetic for a multi-token support, or the host oracle's residual and
-uniform arithmetic in the same regime. I am deliberately not calling it a production defect — the last
-time I asserted a severity for this code without deriving it, I was wrong.
+The accept rate is an independent check on the mechanism, not just on the output. `P(accept) =
+1 - TV(p,q)` (Leviathan et al. 2302.01318 Thm 1; 2606.30265). Here `TV = 0.5 * (0.4263 + 0.4263) =
+0.4263`, so the prediction is 57.37 % against 57.8 % measured — 0.57 standard errors. Their notation is
+the mirror of ours: their `q` is the target and their `p` the proposal. The case is deterministic, since
+the seeds derive from the trial index, so it produces identical numbers on every run.
 
-**Done when:** the divergence is attributed to one side and fixed, or the oracle is corrected and the
-`top_k=1` restriction on the sparse cases is lifted so that `top_k=20` is covered by the suite. Either
-way the case has to be re-added, because a distributional check on the accept rule does not exist in the
-tree today and the penalty-asymmetry discussion in `tools/release/v3_profile_matrix.py` rests on the
-identity that this case was written to test.
+**The lesson that outlives the fix, and the reason this was worth an item.** The `top_k = 1` agreement
+I treated as proof that the harness was sound proved nothing about the accept rule at all: at `top_k = 1`
+the support is a single token, so `p` is a point mass, so `p >= q` is true for every draft whatever `q`
+is, and accept-always is correct. A control that passes for a structural reason is not a control. The
+multi-token case is where the accept rule actually has arithmetic to get wrong, and it was the one
+configuration nobody was checking.
 
 ---
 

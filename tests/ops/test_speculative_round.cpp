@@ -817,6 +817,246 @@ struct SparseAcceptSuite {
             targets, logits, drafts, ids, q, extents, lengths, anchors, configs, history, {false});
     }
 
+    // Isolates the two halves of the sparse accept path, because a single comparison against the
+    // distribution cannot tell them apart.
+    //
+    // With extent 0 there is no draft to accept, so the kernel goes straight to the terminal token,
+    // which is drawn from p at column 0 with no accept test and no residual. The emitted histogram
+    // is therefore the kernel's own p, and comparing it against the oracle's p says whether the two
+    // sides agree on the target distribution.
+    //
+    // With extent 1 the draft is accepted or rejected and, on rejection, the residual is drawn. The
+    // emitted histogram is still p, by the identity, so comparing the same way says whether the
+    // accept rule and the residual agree with the oracle.
+    //
+    // Two tokens, no penalty, top_p 1.0. That is the smallest configuration with a multi-token
+    // support, which is where the two sides were last seen to disagree: every sparse case in this
+    // file sets top_k = 1, where a point-mass p makes accept-always correct and the accept rule is
+    // never actually exercised.
+    int accept_distribution_isolation_case() {
+        // 4096 trials, and the count is chosen for cost rather than for statistical reach. The seeds
+        // are derived from the trial index, so the case is deterministic and produces the same
+        // numbers on every run and every machine: there is no run-to-run variance to average over.
+        // What the count has to buy is margin against the threshold, and at 4096 the observed chi2
+        // sits around 0.2 against a limit of 16.
+        constexpr int kTrials = 4096;
+        // chi2 with 1 degree of freedom: the 0.999 quantile is 10.83. 16 leaves room for the seed
+        // choice while still rejecting a real divergence.
+        constexpr double kChiSquareAccept = 16.0;
+
+        std::vector<std::uint16_t> logits(static_cast<std::size_t>(kSparsePhysicalRows) *
+                                              kSparseColumns * kSparseBatch,
+                                          f32_to_bf16(-20.0f));
+        logits[sparse_logit_index(0, 0, 0)] = f32_to_bf16(4.0f);
+        logits[sparse_logit_index(0, 0, 1)] = f32_to_bf16(3.7f);
+        logits[sparse_logit_index(0, 1, 0)] = f32_to_bf16(4.0f);
+        logits[sparse_logit_index(0, 1, 1)] = f32_to_bf16(3.7f);
+        std::vector<std::int32_t> drafts(kSparseDrafts * kSparseBatch, 0);
+        std::vector<std::int32_t> candidate_ids(kSparseCandidates * kSparseDrafts * kSparseBatch, 0);
+        std::vector<float> proposal_q(candidate_ids.size(), 0.0f);
+        const std::vector<std::int32_t> lengths{4096};
+        const std::vector<std::int32_t> anchors{-1};
+        const std::vector<std::int32_t> token_counts(static_cast<std::size_t>(kSparseTokenDomain), 0);
+
+        ops::SamplingConfig config{};
+        config.temperature = 1.0f;
+        config.top_k       = 2;
+        config.top_p       = 1.0f;
+        config.min_p       = 0.0f;
+        config.seed        = 0;
+
+        const TargetDistribution reference =
+            sparse_target_distribution(logits, 0, 0, config, token_counts, drafts);
+        std::printf("  isolation: oracle p has %zu tokens", reference.ids.size());
+        for (std::size_t i = 0; i < reference.ids.size(); ++i) {
+            std::printf(" [%d]=%.4f", reference.ids[i], reference.probabilities[i]);
+        }
+        std::printf("\n");
+        if (reference.ids.size() != 2) {
+            std::cerr << "isolation: expected a two token support, got " << reference.ids.size()
+                      << "\n";
+            return 1;
+        }
+        std::vector<double> p(static_cast<std::size_t>(kSparseTokenDomain), 0.0);
+        for (std::size_t i = 0; i < reference.ids.size(); ++i) {
+            p[static_cast<std::size_t>(reference.ids[i])] = reference.probabilities[i];
+        }
+
+        // The acceptance rate is the half of this case that can fail on its own. The distribution
+        // check above would still pass an accept rule that never accepts, because the residual
+        // normalize(max(0, p - q)) is p on its own whenever q is a point mass. So the rate is
+        // predicted independently -- P(accept) = 1 - TV(p, q), from the rejection-sampling identity
+        // (Leviathan et al. 2302.01318 Thm 1) -- and asserted here. A rule that always accepted, or
+        // never accepted, is now caught.
+        double total_variation = 0.0;
+        for (std::size_t t = 0; t < static_cast<std::size_t>(kSparseTokenDomain); ++t) {
+            // q is a point mass on reference.ids[0], so the two bins where they differ carry it all.
+            const double q_mass =
+                (t == static_cast<std::size_t>(reference.ids[0])) ? 1.0 : 0.0;
+            total_variation += std::abs(p[t] - q_mass);
+        }
+        total_variation *= 0.5;
+        const double predicted_accept = 1.0 - total_variation;
+        // Six standard errors of a binomial at kTrials. Wide enough that the bound is not the test,
+        // narrow enough that a rule stuck at 0 or 1 cannot pass.
+        const double rate_tolerance =
+            6.0 * std::sqrt(predicted_accept * (1.0 - predicted_accept) / kTrials);
+        std::printf("  isolation: TV(p,q)=%.4f so P(accept)=%.4f, tolerance=%.4f\n",
+                    total_variation, predicted_accept, rate_tolerance);
+
+        // One proposal, reused by both sub-runs: a point mass on the more likely of the two tokens,
+        // which is also the draft. q is 1.0 there and p is strictly between zero and one, so the
+        // draft is accepted with probability p -- neither branch is degenerate. Everything is keyed
+        // off reference.ids[0] rather than a literal token id, so that the candidate set, the draft
+        // and the TV above cannot drift apart if the logits are ever reordered.
+        const std::int32_t proposal_token = reference.ids[0];
+        for (int c = 0; c < kSparseCandidates; ++c) {
+            candidate_ids[sparse_candidate_index(0, 0, c)] = proposal_token;
+        }
+        proposal_q[sparse_candidate_index(0, 0, 0)] = 1.0f;
+        drafts[0] = proposal_token;
+
+        DeviceBuffer d_logits        = to_device(logits);
+        DeviceBuffer d_drafts        = to_device(drafts);
+        DeviceBuffer d_candidate_ids = to_device(candidate_ids);
+        DeviceBuffer d_proposal_q    = to_device(proposal_q);
+        DeviceBuffer d_token_counts  = to_device(token_counts);
+        ops::SamplingConfig host     = config;
+        host.token_counts            = static_cast<std::int32_t*>(d_token_counts.p);
+        DeviceBuffer d_configs       = to_device(std::vector<ops::SamplingConfig>{host});
+        DeviceBuffer d_targets       = to_device(std::vector<std::int32_t>(
+            kSparseColumns * kSparseBatch, 0));
+        DeviceBuffer d_extents       = to_device(std::vector<std::int32_t>{0});
+        GuardedDeviceBuffer d_lengths(sizeof(std::int32_t));
+        GuardedDeviceBuffer d_anchors(sizeof(std::int32_t));
+        GuardedDeviceBuffer d_licensed(kSparseColumns * sizeof(std::int32_t));
+        GuardedDeviceBuffer d_licensed_counts(sizeof(std::int32_t));
+        GuardedDeviceBuffer d_accepted(sizeof(std::int32_t));
+
+        Tensor targets_tensor(d_targets.p, DType::I32, {kSparseColumns, kSparseBatch});
+        Tensor logits_tensor(d_logits.p, DType::BF16,
+                             {kSparsePhysicalRows, kSparseColumns, kSparseBatch});
+        Tensor drafts_tensor(d_drafts.p, DType::I32, {kSparseDrafts, kSparseBatch});
+        Tensor candidate_tensor(d_candidate_ids.p, DType::I32,
+                                {kSparseCandidates, kSparseDrafts, kSparseBatch});
+        Tensor q_tensor(d_proposal_q.p, DType::FP32,
+                        {kSparseCandidates, kSparseDrafts, kSparseBatch});
+        Tensor extent_tensor(d_extents.p, DType::I32, {kSparseBatch});
+        Tensor lengths_tensor(d_lengths.data(), DType::I32, {kSparseBatch});
+        Tensor anchors_tensor(d_anchors.data(), DType::I32, {kSparseBatch});
+        Tensor licensed_tensor(d_licensed.data(), DType::I32, {kSparseColumns, kSparseBatch});
+        Tensor licensed_counts_tensor(d_licensed_counts.data(), DType::I32, {kSparseBatch});
+        Tensor accepted_tensor(d_accepted.data(), DType::I32, {kSparseBatch});
+        const ops::SpeculativeAcceptExecutionEnvelope envelope{false};
+
+        int failures = 0;
+        for (const int extent : {0, 1}) {
+            cuda_check(cudaMemcpy(d_extents.p, &extent, sizeof(std::int32_t),
+                                  cudaMemcpyHostToDevice),
+                       "extent");
+            const std::size_t workspace_bytes =
+                ops::speculative_accept_sparse_drafts_workspace_capacity_bytes(
+                    kSparseTokenDomain, envelope, kSparseDrafts, kSparseDrafts, kSparseBatch,
+                    kSparseBatch);
+            GuardedDeviceBuffer scratch(std::max<std::size_t>(workspace_bytes, 1));
+            WorkspaceArena arena(DeviceSpan{scratch.data(), scratch.bytes()});
+            std::vector<std::int32_t> counts(static_cast<std::size_t>(kSparseTokenDomain), 0);
+            int acceptances = 0;
+            for (int trial = 0; trial < kTrials; ++trial) {
+                host.seed = 0x9E3779B97F4A7C15ull * static_cast<unsigned long long>(trial + 1);
+                cuda_check(cudaMemcpy(d_configs.p, &host, sizeof(ops::SamplingConfig),
+                                      cudaMemcpyHostToDevice),
+                           "seed");
+                initialize(d_lengths, lengths);
+                initialize(d_anchors, anchors);
+                ops::speculative_accept_sparse_drafts(
+                    targets_tensor, logits_tensor, drafts_tensor, candidate_tensor, q_tensor,
+                    extent_tensor, lengths_tensor, anchors_tensor, licensed_tensor,
+                    licensed_counts_tensor, accepted_tensor, kSparseTokenDomain,
+                    static_cast<const ops::SamplingConfig*>(d_configs.p), envelope, arena, nullptr);
+                cuda_synchronize();
+                const std::vector<std::int32_t> got = read<std::int32_t>(d_licensed, 2);
+                ++counts[static_cast<std::size_t>(got[0])];
+                acceptances += read<std::int32_t>(d_accepted, 1)[0];
+                if (trial == 0) {
+                    // One exact per-decision comparison against the host oracle, for the same seed
+                    // and draft, asserted rather than printed. The aggregate chi2 below can only
+                    // report that the two distributions differ; this says the decision itself does,
+                    // which is a different defect with a different cause.
+                    std::vector<ops::SamplingConfig> trial_config{config};
+                    trial_config[0].seed = host.seed;
+                    const SparseExpected wanted =
+                        sparse_accept_oracle(logits, drafts, candidate_ids, proposal_q,
+                                             std::vector<std::int32_t>{extent}, lengths,
+                                             trial_config, token_counts);
+                    const bool agree = got[0] == wanted.licensed_tokens[0] &&
+                                       got[1] == wanted.licensed_tokens[1] &&
+                                       read<std::int32_t>(d_accepted, 1)[0] == wanted.accepted[0];
+                    std::printf("  isolation extent=%d seed=%llu device=[%d,%d] accepted=%d"
+                                " oracle=[%d,%d] accepted=%d %s\n",
+                                extent, static_cast<unsigned long long>(host.seed), got[0], got[1],
+                                read<std::int32_t>(d_accepted, 1)[0], wanted.licensed_tokens[0],
+                                wanted.licensed_tokens[1], wanted.accepted[0],
+                                agree ? "match" : "DIFFER");
+                    if (!agree) {
+                        std::cerr << "isolation extent=" << extent
+                                  << ": the device and the host oracle disagree on the decision for"
+                                     " seed " << host.seed << "\n";
+                        ++failures;
+                    }
+                }
+            }
+            double chi2          = 0.0;
+            int outside          = 0;
+            for (std::size_t t = 0; t < static_cast<std::size_t>(kSparseTokenDomain); ++t) {
+                const double observed = static_cast<double>(counts[t]);
+                if (p[t] <= 0.0) {
+                    if (observed > 0.0) ++outside;
+                    continue;
+                }
+                const double want = p[t] * kTrials;
+                chi2 += (observed - want) * (observed - want) / want;
+            }
+            std::printf("  isolation extent=%d accepted=%6d chi2(p)=%9.1f outside=%d\n", extent,
+                        acceptances, chi2, outside);
+            if (extent == 0) {
+                // No draft, so nothing can be accepted. A non-zero count here means the extent is
+                // not reaching the kernel and the sub-run is not measuring what it names.
+                if (acceptances != 0) {
+                    std::cerr << "isolation extent=0: " << acceptances
+                              << " drafts were accepted with extent 0, so the extent argument is not"
+                                 " reaching the kernel\n";
+                    ++failures;
+                }
+            } else {
+                const double measured = static_cast<double>(acceptances) / kTrials;
+                if (std::abs(measured - predicted_accept) > rate_tolerance) {
+                    std::cerr << "isolation extent=1: acceptance rate " << measured
+                              << " against a predicted " << predicted_accept << " (1 - TV), outside "
+                              << rate_tolerance
+                              << " -- the accept rule is not min(1, p/q)\n";
+                    ++failures;
+                }
+            }
+            if (outside != 0) {
+                std::cerr << "isolation extent=" << extent << ": emitted " << outside
+                          << " tokens outside the two token support\n";
+                ++failures;
+            }
+            if (!(chi2 < kChiSquareAccept)) {
+                std::cerr << "isolation extent=" << extent
+                          << ": the emitted distribution is not p, chi2=" << chi2
+                          << " against a limit of " << kChiSquareAccept
+                          << (extent == 0 ? " -- so the two sides disagree on the target"
+                                            " distribution itself\n"
+                                          : " -- so the accept rule or the residual disagrees\n");
+                ++failures;
+            }
+            failures += scratch.verify_guards("isolation scratch");
+        }
+        return failures;
+    }
+
     int sparse_general_mixed_case() {
         std::vector<std::int32_t> targets(kSparseColumns * kSparseBatch);
         std::vector<std::uint16_t> logits(static_cast<std::size_t>(kSparsePhysicalRows) *
@@ -1378,6 +1618,7 @@ int main(int argc, char** argv) {
         failures += SparseAcceptSuite(k, 1).repeated_history_case(false);
         failures += SparseAcceptSuite(k, 1).repeated_history_case(true);
     }
+    failures += SparseAcceptSuite(1, 1).accept_distribution_isolation_case();
 
     if (failures != 0) {
         std::cerr << "speculative_round failures=" << failures << '\n';

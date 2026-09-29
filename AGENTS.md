@@ -126,6 +126,20 @@ Concretely, before stating a number, a design conclusion, or a causal claim:
   time an index-based CSV reader turned real data into clean zeros.
 - **Say which of the three it is**: measured here, read in the source, or reported by a third party.
   An estimate presented as a measurement is the failure this section exists to prevent.
+- **A control that agrees for a structural reason is not a control.** Before reporting one, name what
+  would have to be false for it to fail. At `top_k = 1` the target's support is one token, so `p` is a
+  point mass, so `p >= q` holds for every draft whatever `q` is and "accept always" is correct -- which
+  is why the sparse accept cases agreeing there said nothing about the accept rule, and why a
+  multi-token disagreement I reported was later found to be my own harness. A configuration in which
+  the code under test is degenerate cannot corroborate it.
+- **Attribute a disagreement before reporting it.** When a device and an oracle disagree, the third
+  possibility is the harness. One session reported such a disagreement as a kernel-or-oracle
+  divergence; it was the throwaway harness and the cause was never identified. Four more harness
+  errors that session were caught before they reached a report -- a draft that was deterministically
+  accepted so the branch under test never ran, Op-maintained token counts drifting between trials, a
+  probe that passed the wrong draft and seed to the oracle, and a scratch script whose `cd` walked out
+  of the repository so the suite's exit code came from a failed `call` and read as a test failure.
+  "Unattributed" is a reportable result; picking the side that is easier to describe is not.
 
 Select evidence to support the changed behavior and material claims. Tests should protect supported
 observable behavior, mathematical or state semantics, and realistic regressions, including plausible
