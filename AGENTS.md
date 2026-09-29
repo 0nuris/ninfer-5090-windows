@@ -126,6 +126,14 @@ Concretely, before stating a number, a design conclusion, or a causal claim:
   time an index-based CSV reader turned real data into clean zeros.
 - **Say which of the three it is**: measured here, read in the source, or reported by a third party.
   An estimate presented as a measurement is the failure this section exists to prevent.
+- **A measurement that decides a shipped setting has to outlive the session that took it.** A decision
+  resting on a sweep run from a scratch script is unverifiable the moment that script is gone, and it
+  can then be neither reviewed nor withdrawn. In one session, two sweeps that reversed a shipped
+  configuration were taken from temp scripts and never persisted -- they were in no document, not in the
+  bench's own record file, and not under `profiles/` -- so the change they contradict could be neither
+  confirmed nor reverted, and had to be recorded as unresolved instead. Land the numbers, then decide.
+  `tools/release/v3_profile_matrix.py` now writes the workload and the sampling beside every figure for
+  exactly this reason.
 - **A control that agrees for a structural reason is not a control.** Before reporting one, name what
   would have to be false for it to fail. At `top_k = 1` the target's support is one token, so `p` is a
   point mass, so `p >= q` holds for every draft whatever `q` is and "accept always" is correct -- which

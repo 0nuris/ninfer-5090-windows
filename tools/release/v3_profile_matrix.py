@@ -185,6 +185,48 @@ CODE_PROMPT = (
 )
 PROBE_PROMPT = "Reply with the single word OK."
 
+# The domain a throughput figure was measured on, and the prompt that defines it. A measurement
+# carries the workload it was taken on, the way a startup figure carries its slot count, and this
+# bench carried neither: measure_decode hardcoded CODE_PROMPT and the record had no domain field, so
+# every tok/s in the profile table was a single synthetic code prompt and no record said so. That is
+# not cosmetic. Code is the most favourable domain for speculation -- measured 3.18 to 5.71 tokens per
+# round against 1.18 to 1.85 on Chinese -- so a code-prompt figure sits at the high end of the range,
+# and every width and depth decision taken from it reversed once other domains were included.
+#
+# "repetition" is there for a specific reason rather than as filler: it is copy-heavy by construction,
+# which is the workload the ngram copy selector is for, so it is the domain its break-even has to be
+# measured on rather than assumed from a code prompt.
+DOMAINS: dict[str, str] = {
+    "code": CODE_PROMPT,
+    "prose": (
+        "Explain how a modern CPU out-of-order execution unit speculates past a branch and then "
+        "recovers when the prediction was wrong. Write four paragraphs of continuous prose."
+    ),
+    "chinese": (
+        "请详细解释现代处理器中的乱序执行和分支预测是如何协同工作的，"
+        "并说明它们对程序性能的实际影响。请写四段连续的文字。"
+    ),
+    "dialogue": (
+        "You are helping a colleague debug a failing test. They say: the suite passes locally and "
+        "fails in CI about one run in five, always on the same test, and never on a clean machine. "
+        "Ask them the questions you would need answered, one at a time, and say why each one matters."
+    ),
+    "repetition": (
+        "Complete the following pattern exactly, copying it without variation:\n"
+        "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike "
+        "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike "
+        "alpha bravo charlie delta echo"
+    ),
+}
+DEFAULT_DOMAIN = "code"
+
+
+def domain_prompt(name: str) -> str:
+    """The prompt for a domain label, refusing an unknown one rather than measuring something else."""
+    if name not in DOMAINS:
+        raise SystemExit(f"unknown domain {name!r}; choose from {', '.join(sorted(DOMAINS))}")
+    return DOMAINS[name]
+
 
 # ---------------------------------------------------------------- process control
 
@@ -261,7 +303,8 @@ def run_once_gen(prompt: str, max_tokens: int, sampling: str = "default") -> tup
     return tokens, dt, text
 
 
-def measure_decode(runs: int = 3, jsonl: Path | None = None, greedy: bool = False) -> dict:
+def measure_decode(runs: int = 3, jsonl: Path | None = None, greedy: bool = False,
+                   domain: str = DEFAULT_DOMAIN, sampling_label: str = "documented") -> dict:
     """A probe, one discarded full-length warmup, `runs` realistic decode runs, one deterministic pass.
 
     Acceptance is taken only from the realistic runs: the deterministic pass uses
@@ -279,17 +322,23 @@ def measure_decode(runs: int = 3, jsonl: Path | None = None, greedy: bool = Fals
     """
     ct, dt, _ = run_once_gen(PROBE_PROMPT, 16, "default")
     warmup = ct / dt if dt else 0.0
-    run_once_gen(CODE_PROMPT, DECODE_TOKENS, "default")
+    prompt = domain_prompt(domain)
+    run_once_gen(prompt, DECODE_TOKENS, "default")
 
     rates = []
     for _ in range(runs):
-        ct, dt, _ = run_once_gen(CODE_PROMPT, DECODE_TOKENS, "default")
+        ct, dt, _ = run_once_gen(prompt, DECODE_TOKENS, "default")
         rates.append(ct / dt if dt else 0.0)
 
     out = {
         "warmup_tps": round(warmup, 1),
         "decode_tps": [round(r, 1) for r in rates],
         "decode_avg": round(sum(rates) / len(rates), 1) if rates else 0.0,
+        # The workload and the sampling, in the record that carries the number. A decode figure
+        # without these is not a measurement of anything in particular: the domain moves tokens per
+        # round by more than a factor of two and the sampling moves acceptance by tens of points.
+        "domain": domain,
+        "sampling": sampling_label,
     }
 
     if jsonl is not None:
@@ -476,12 +525,19 @@ def build_args(art: str, spec: str, draft: int, vision: bool, max_context: int,
 def run_profile(art: str = "", spec: str = "", draft: int = 0, vision: bool = False,
                 max_context: int = 0, measure: bool = True, greedy: bool = False,
                 lm_head: bool = True, profile: dict | None = None,
-                slots: str | None = None, kv_dtype: str = "fp8") -> dict:
+                slots: str | None = None, kv_dtype: str = "fp8",
+                domain: str = DEFAULT_DOMAIN) -> dict:
     if profile is None:
         tag = (f"{art}-v3-{spec}-d{draft}{'-vision' if vision else ''}-ctx{max_context}"
                f"{'' if lm_head else '-nolmh'}")
     else:
         tag = profile["file"].removesuffix(".bat")
+    # The domain goes in the tag as well as the record, so two domains of the same lane do not
+    # overwrite each other's log or request file. A sweep that varies the domain and writes one file
+    # per lane silently keeps only the last domain's request log, and the acceptance numbers read
+    # back from it then belong to a workload the record does not name.
+    if domain != DEFAULT_DOMAIN:
+        tag = f"{tag}-{domain}"
     log = OUT / f"sweep_{tag}.txt"
     jsonl = OUT / f"req_{tag}.jsonl"
     jsonl.unlink(missing_ok=True)  # the server appends; a stale file would average runs
@@ -516,7 +572,7 @@ def run_profile(art: str = "", spec: str = "", draft: int = 0, vision: bool = Fa
 
     if ready and measure:
         try:
-            record.update(measure_decode(jsonl=jsonl, greedy=greedy))
+            record.update(measure_decode(jsonl=jsonl, greedy=greedy, domain=domain))
         except urllib.error.HTTPError as e:
             record["measure_error"] = f"HTTP {e.code} {e.read().decode('utf-8', 'replace')[:150]}"
         except Exception as e:  # noqa: BLE001
@@ -634,13 +690,15 @@ def mode_verify(art: str, spec: str, draft: int, vision: bool, max_context: int,
         print(f"           | {line[:150]}")
 
 
-def mode_profile(name: str, slots: str | None = None) -> None:
+def mode_profile(name: str, slots: str | None = None,
+                 domain: str = DEFAULT_DOMAIN) -> None:
     """Measure one shipped profile exactly as its launcher starts it.
 
     `slots` overrides the profile's --device-state-slots so the value can be chosen from a record;
-    the default is still whatever the profile table ships.
+    the default is still whatever the profile table ships. `domain` is the workload the decode figure
+    is taken on, and it is recorded alongside the figure.
     """
-    rec = run_profile(profile=by_file(name), measure=True, slots=slots)
+    rec = run_profile(profile=by_file(name), measure=True, slots=slots, domain=domain)
     show(rec)
     for line in rec.get("spec_lines", [])[-4:]:
         print(f"           | {line[:150]}")
@@ -666,6 +724,10 @@ def main() -> int:
     ap.add_argument("--kv-dtype", default="fp8",
                     choices=["bf16", "int8", "fp8", "nvfp4", "k8v4"],
                     help="probe modes: vary the KV dtype the launchers ship as fp8")
+    ap.add_argument("--domain", dest="domains", action="append", choices=sorted(DOMAINS),
+                    help="profile mode: the workload to measure on, repeatable, default the one "
+                         "domain the table was measured on. Recorded in every result, because a "
+                         "decode figure without its workload is not interpretable -- see DOMAINS.")
     args = ap.parse_args()
 
     if not EXE.exists():
@@ -687,7 +749,8 @@ def main() -> int:
                 mode_correct(art, vision)
     elif args.mode == "profile":
         for name in (args.files or [p["file"] for p in PROFILES]):
-            mode_profile(name, slots=args.slots)
+            for domain in (args.domains or [DEFAULT_DOMAIN]):
+                mode_profile(name, slots=args.slots, domain=domain)
     else:
         spec = (args.specs or ["mtp"])[0]
         mode_verify((args.arts or ["quasar"])[0], spec,
