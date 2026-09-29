@@ -250,7 +250,7 @@ Read the authority relevant to the current decision; this is not a mandatory rea
 | Decision | Entry point |
 |---|---|
 | Product capabilities and exact commands | `README.md`, executable `--help`; `docs/cli.md`, `docs/serving.md`, `docs/perplexity.md` |
-| Execution, model/runtime ownership, scheduling, transactions, graphs | `docs/maintainer/engine-architecture.md` |
+| Execution, model/runtime ownership, scheduling, transactions, graphs | `docs/maintainer/engine-architecture.md`; `docs/maintainer/project-map.md` for the generated module graph, blast radius and module cycles |
 | Context resources, checkpoints, replicas; physical KV | `docs/maintainer/resource-scheduling-and-context-cache.md`; `docs/maintainer/paged-kv-cache.md` |
 | Artifact, layout, codec, conversion, or model mathematics | model/artifact references and conversion guide linked from `docs/README.md` |
 | Op contracts, implementation ownership, numerical/performance qualification | `docs/maintainer/op-development.md` |

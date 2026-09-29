@@ -21,6 +21,33 @@ The registered line also defines a `groupwise-int` peer and a plain `nvfp4` prof
 here because the engine implements them. This port ships, pins and measures only the two v3 fork
 artifacts of Section 14.
 
+## 0. Superseded artifacts kept on disk, and which recorded rows depend on them
+
+`C:\AI\models` holds exactly the five artifacts this port ships, named by `tools/release/profiles.py`
+plus the official stock. Superseded builds live in `C:\AI\models\_superseded\` rather than beside
+them, so no glob or name lookup at the top level can resolve a lane to the wrong file, which is the
+hazard the arrangement exists to remove.
+
+Seven files remain there, about 88.6 GiB on disk -- 124.0 GiB as stated sizes, because two pairs are
+hardlinks of one payload each. None is a duplicate of a shipped file, and **none is regenerable in
+this tree**: the converter modules and calibration inputs belong to `cometkim/ninfer` and are
+deliberately not carried here, per the provenance note below. Deleting one is therefore not a matter
+of re-running a conversion, and the recorded rows are the reason several are still wanted:
+
+| archived file | why it is kept |
+|---|---|
+| `qwen3_8_27b_nvfp4full.v3.ninfer.rebuilt` | the pre-`.v4` build; backs the 4.98768 / 4.97532 rows |
+| `qwen3_8_27b_nvfp4qat.v3.ninfer.rebuilt` | backs the 4.99097 "rebuilt from source" row |
+| `qwen3_8_27b_nvfp4qat.v3.ninfer.ourq8` | backs the Q8-endpoint experiment rows |
+| `nvfp4full_fetched.ninfer` and `qwen3_8_27b_nvfp4full.v3.ninfer.fetched` | one payload, two links; the fetched download behind the 5.00234 row |
+| `qat_fetched.ninfer` and `qwen3_8_27b_nvfp4qat.v3.ninfer.fetched` | one payload, two links; the fetched QUASAR download |
+
+Three further files were removed from here on 2026-09-29: the `out/` staging copies of the full,
+NVIDIA and QUASAR artifacts, each byte-identical to its shipped counterpart by size and by sampled
+content, so the loss was nil. Identity was re-verified immediately before each unlink rather than
+reused from the audit that found them. What remains is not waste; the space buys the ability to
+re-verify a recorded figure instead of taking it on trust.
+
 ## 1. nvfp4 artifact identity and contents
 
 ```text
