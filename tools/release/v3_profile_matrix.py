@@ -147,12 +147,24 @@ DECODE_TOKENS = 400
 # a server default is one nobody can see, and an earlier revision of this bench sent 0.6 / 0.95 with no
 # presence_penalty -- a point the card specifies for neither mode.
 #
-# presence_penalty is 0.0 here and that is load-bearing, not incidental. The drafter proposes through
-# linear_topk on unpenalised logits while the verify path applies the request's penalty overlay
-# (speculative_round.cuh applies cfg.presence_penalty across the verify block), so a non-zero penalty
-# makes the acceptance test compare two different distributions -- min(1, p_penalised/q_unpenalised) is
-# not a rejection-sampling ratio. sglang measured the same collapse on DFlash: repetition_penalty 1.0
-# gave accept_len 3.227 and 1.5 gave 1.311. The official coding set avoids it.
+# presence_penalty is 0.0 here because it is the card's coding value, and it also happens to be the
+# cheaper one to speculate under. The drafter proposes from the selector's own scores and reads only
+# temperature and seed out of the sampling config (candidate_selector_path.cu, draw_rank), while the
+# verify path applies the request's penalty overlay to the target. The two distributions therefore
+# differ, and a q that predicts p poorly costs acceptance: measured on QUASAR dflash2, 4.18 tokens per
+# round at penalty 0 against 2.45 at 1.5, and sglang measured the same effect on DFlash
+# (accept_len 3.227 at repetition_penalty 1.0, 1.311 at 1.5).
+#
+# That is an efficiency difference and not a correctness one, and the distinction matters enough to
+# state precisely. The accept test is min(1, p/q) and the correction is normalize(max(0, p - q))
+# (speculative_round.cuh: speculative_sparse_warp_accept), which is the standard speculative-sampling
+# identity and holds for ANY normalised q, not only one derived from p the same way. p is normalised
+# over its truncated support by sampling_normalize_support, which renormalises after the top_p and
+# min_p cuts, and q is normalised over the 16 candidates by draw_rank. Tokens outside the candidate set
+# have q = 0, so they are never proposed, and the residual term assigns them their full p. So the
+# emitted token is distributed exactly as p -- the penalised, truncated target -- however mismatched q
+# is. The penalty asymmetry therefore cannot change what the engine samples, only how many draft
+# tokens it keeps. An earlier revision of this comment called it a defect; it is not one.
 #
 # repetition_penalty appears in the card at 1.0 and is deliberately absent: this engine's request
 # contract has no such field (types.h carries temperature, top_p, top_k, min_p, presence_penalty and
@@ -226,7 +238,8 @@ def run_once_gen(prompt: str, max_tokens: int, sampling: str = "default") -> tup
     An earlier revision sent the instruct set (0.7 / 0.80 / presence_penalty 1.5) on the reasoning that
     coding is non-thinking. The card says the opposite: the model defaults to thinking mode and the
     coding benchmarks run at temp 1.0 / top_p 0.95. The instruct set also turned on a penalty the
-    drafter does not see, which is a defect rather than a cost -- see DOCUMENTED_SAMPLING.
+    drafter does not see, which costs acceptance but does not change what is sampled -- see
+    DOCUMENTED_SAMPLING, where the mechanism is worked through.
 
     "zero" pins temperature 0; "none" sends no sampling fields at all, which is the only way the
     server's --greedy flag governs (the docs are explicit that request fields override server flags).

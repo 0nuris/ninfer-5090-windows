@@ -145,12 +145,22 @@ def main() -> int:
                   limit.get("output", 0) > 4096, str(limit.get("output")))
             # The lanes default to the model's own default reasoning effort. It used to be "none",
             # which turned thinking off and therefore selected the non-thinking sampling preset --
-            # temperature 0.7, top_p 0.80, presence_penalty 1.5. That preset is the one this engine
-            # cannot serve correctly: the drafter reads only temperature and seed from the sampling
-            # config (candidate_selector_path.cu) while the verify path applies the penalty overlay
-            # (speculative_round.cuh), so a non-zero penalty makes the acceptance test compare two
-            # different distributions. Measured on QUASAR dflash2: 4.18 tokens per round at penalty 0
-            # against 2.45 at 1.5. The card also names xhigh the default, for complex analysis.
+            # temperature 0.7, top_p 0.80, presence_penalty 1.5.
+            #
+            # The reason to move to xhigh is the card, which names xhigh the default, for complex
+            # tasks demanding thorough analysis, and which measures its coding benchmarks at
+            # temperature 1.0 and top_p 0.95 -- the thinking set. That alone is sufficient.
+            #
+            # The non-thinking set is also the slower one to speculate under, which is a second and
+            # independent reason to prefer xhigh but is not a correctness matter. The drafter reads
+            # only temperature and seed out of the sampling config (candidate_selector_path.cu) while
+            # the verify path applies the penalty overlay, so the drafter's q is not derived from the
+            # penalised p. Measured on QUASAR dflash2: 4.18 tokens per round at penalty 0 against 2.45
+            # at 1.5. It does not change what is sampled -- the accept test is min(1, p/q) with a
+            # normalize(max(0, p - q)) correction, which is the speculative-sampling identity and holds
+            # for any normalised q, and p is renormalised after the top_p and min_p cuts by
+            # sampling_normalize_support. An earlier revision of this comment called the asymmetry a
+            # defect; it is an acceptance-efficiency difference and this gate does not rest on it.
             check(f"{profile['model_id']} defaults to the model's reasoning effort",
                   effort == "xhigh", f"reasoningEffort={effort!r}")
 

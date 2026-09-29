@@ -169,6 +169,39 @@ artifacts with a documented way to be badly wrong and no measurement behind it.
 shipping lane, measuring perplexity and decode acceptance. Unlike the weight scale, the comparison
 needs a calibration corpus, so it is a real cost and not a free-at-runtime change.
 
+### 11. The sparse accept path is only oracle-checked at `top_k=1`, and it disagrees with the oracle above that
+**Found 2026-09-28, while auditing a claim of mine that turned out to be false. Unresolved.**
+
+`tests/ops/test_speculative_round.cpp` compares the sparse accept device path against a host oracle
+(`sparse_accept_oracle` / `sparse_target_distribution`, FP64). **Every sparse case in the file sets
+`top_k = 1`** — `generated_general_case` and `sparse_general_mixed_case` both do — so the whole
+multi-token branch of the accept rule is unverified by the suite's own oracle. The production dflash2
+lane sends `top_k = 20`, which is the uncovered case.
+
+A throwaway case built to measure the emitted-token distribution (a real gap: the existing cases pin
+one seed and compare one decision, so they cannot see a distributional error) put the two sides side by
+side and they disagree:
+
+| configuration | device | host oracle |
+|---|---|---|
+| `top_k=1`, `top_p=1.0`, no penalty | agrees on every trial | agrees |
+| `top_k=2`, `top_p=1.0`, **no penalty at all** | accepted the draft on 16384 of 16384 trials | accepted on ~47 % |
+
+The `top_k=1` row is the control that says the harness is sound: the histogram, the chi-square and the
+oracle all agree exactly there (`chi2 = 0.0`). So this is not a broken harness. It appears as soon as
+the target's support has more than one token.
+
+**Which side is wrong is not established.** Two candidates, and I have no evidence favouring either:
+the kernel's accept/correction arithmetic for a multi-token support, or the host oracle's residual and
+uniform arithmetic in the same regime. I am deliberately not calling it a production defect — the last
+time I asserted a severity for this code without deriving it, I was wrong.
+
+**Done when:** the divergence is attributed to one side and fixed, or the oracle is corrected and the
+`top_k=1` restriction on the sparse cases is lifted so that `top_k=20` is covered by the suite. Either
+way the case has to be re-added, because a distributional check on the accept rule does not exist in the
+tree today and the penalty-asymmetry discussion in `tools/release/v3_profile_matrix.py` rests on the
+identity that this case was written to test.
+
 ---
 
 ## Closed — do not reopen
