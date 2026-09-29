@@ -126,30 +126,44 @@ def ceiling_of(art: str, spec: str, vision: bool, lm_head: bool) -> int:
 
 DECODE_TOKENS = 400
 
-# The sampling configuration Qwen3.8-27B's own model card recommends for Instruct (non-thinking)
-# mode, which is what code generation is. Sourced from the checkpoint's README.md, not chosen here:
+# The sampling configuration Qwen3.8-27B's own model card specifies, for the mode it defaults to
+# and the mode its coding benchmarks are measured in. Sourced from the checkpoint's README.md, not
+# chosen here:
 #
+#   "Qwen3.8 models operate in thinking mode by default"
 #   "We recommend using the following sets of sampling parameters for generation:
 #    - Thinking Mode: temperature=1.0, top_p=0.95, top_k=20, min_p=0.0, presence_penalty=0.0
 #    - Instruct (or non-thinking) mode: temperature=0.7, top_p=0.80, top_k=20, min_p=0.0,
 #      presence_penalty=1.5"
 #
-# These are not this port's values either. frontend.cpp's default_sampling() already encodes exactly
-# this pair, presence_penalty 1.5 included, so the engine's shipped default was right and the bench was
-# overriding it with 0.6 / 0.95 and no presence_penalty at all. The table is kept explicit because a
-# measurement that silently depends on a server default is one nobody can see, and the card's coding
-# benchmarks (SWE-bench Pro, DeepSWE, QwenSWEBench) are reported under one of these two sets.
+# The coding benchmarks settle which of the two applies: SWE-bench Pro and DeepSWE 1.1 are both
+# "evaluated with the Claude Code harness at temp=1.0, top_p=0.95, and a 256K context window", which is
+# the thinking set, and the checkpoint's shipped generation_config.json carries temperature 1.0,
+# top_k 20, top_p 0.95. The instruct set is for enable_thinking: false, which is not how code
+# generation is evaluated.
+#
+# frontend.cpp's default_sampling() already encodes both sets, so these are the engine's own defaults
+# rather than this port's. The table is sent explicitly because a measurement that silently depends on
+# a server default is one nobody can see, and an earlier revision of this bench sent 0.6 / 0.95 with no
+# presence_penalty -- a point the card specifies for neither mode.
+#
+# presence_penalty is 0.0 here and that is load-bearing, not incidental. The drafter proposes through
+# linear_topk on unpenalised logits while the verify path applies the request's penalty overlay
+# (speculative_round.cuh applies cfg.presence_penalty across the verify block), so a non-zero penalty
+# makes the acceptance test compare two different distributions -- min(1, p_penalised/q_unpenalised) is
+# not a rejection-sampling ratio. sglang measured the same collapse on DFlash: repetition_penalty 1.0
+# gave accept_len 3.227 and 1.5 gave 1.311. The official coding set avoids it.
 #
 # repetition_penalty appears in the card at 1.0 and is deliberately absent: this engine's request
 # contract has no such field (types.h carries temperature, top_p, top_k, min_p, presence_penalty and
 # frequency_penalty), and 1.0 is the identity, so sending it would add an unsupported key for no
 # behavioural change.
 DOCUMENTED_SAMPLING: dict[str, object] = {
-    "temperature": 0.7,
-    "top_p": 0.80,
+    "temperature": 1.0,
+    "top_p": 0.95,
     "top_k": 20,
     "min_p": 0.0,
-    "presence_penalty": 1.5,
+    "presence_penalty": 0.0,
 }
 
 CODE_PROMPT = (
@@ -205,15 +219,14 @@ def run_once_gen(prompt: str, max_tokens: int, sampling: str = "default") -> tup
     """Send one completion.
 
     sampling "default" is the realistic profile run and carries the sampling configuration
-    Qwen3.8-27B's own model card recommends for Instruct (non-thinking) mode -- temperature 0.7,
-    top_p 0.80, top_k 20, min_p 0.0, presence_penalty 1.5. Coding is the instruct case, and the
-    card's coding benchmarks are the same configuration.
+    Qwen3.8-27B's own model card specifies for its default mode -- temperature 1.0, top_p 0.95,
+    top_k 20, min_p 0.0, presence_penalty 0.0. That is the set its coding benchmarks are measured
+    under, and the set the checkpoint's own generation_config.json ships.
 
-    This was temperature 0.6 / top_p 0.95 and nothing else, which the card specifies for no mode, and
-    it overrode an engine default that already had the documented values including presence_penalty
-    1.5. So the profile table was measured at an operating point the model does not document and the
-    engine does not default to, which is why a token's worth of accuracy and diversity was being traded
-    away invisibly on every measurement.
+    An earlier revision sent the instruct set (0.7 / 0.80 / presence_penalty 1.5) on the reasoning that
+    coding is non-thinking. The card says the opposite: the model defaults to thinking mode and the
+    coding benchmarks run at temp 1.0 / top_p 0.95. The instruct set also turned on a penalty the
+    drafter does not see, which is a defect rather than a cost -- see DOCUMENTED_SAMPLING.
 
     "zero" pins temperature 0; "none" sends no sampling fields at all, which is the only way the
     server's --greedy flag governs (the docs are explicit that request fields override server flags).
