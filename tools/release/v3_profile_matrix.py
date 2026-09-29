@@ -346,7 +346,12 @@ def measure_decode(runs: int = 3, jsonl: Path | None = None, greedy: bool = Fals
         # the only leading request record in the log.
         out.update(parse_spec_jsonl(jsonl, skip=1))
 
-    _, _, text = run_once_gen(CODE_PROMPT, 400, "none" if greedy else "zero")
+    # The digest has to come from the same workload as the throughput it sits beside, or the record
+    # describes two different runs in one entry: a prose record carrying a digest of code-prompt text
+    # reads as though both figures came from the same request. The prompt is a parameter for the same
+    # reason the sampling is. A digest is only ever compared within one sweep, so changing the prompt
+    # does not invalidate anything held elsewhere.
+    _, _, text = run_once_gen(prompt, 400, "none" if greedy else "zero")
     out["digest"] = hashlib.sha256(text.encode()).hexdigest()[:16]
     out["digest_tokens"] = len(text)
     return out
