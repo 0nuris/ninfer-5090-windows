@@ -1,0 +1,85 @@
+# Starts ninfer-serve with the settings in ninfer.config.ps1 and waits until /health answers.
+# Exit code 0 = READY, 1 = refused or failed (the reason is printed; details in logs\ninfer.err).
+
+$Root = $PSScriptRoot
+. (Join-Path $Root "ninfer.config.ps1")
+$c = $NInferConfig
+function Resolve-Rooted($p) { if ([IO.Path]::IsPathRooted($p)) { $p } else { Join-Path $Root $p } }
+$exe   = Resolve-Rooted $c.Exe
+$model = Resolve-Rooted $c.Model
+$logs  = Resolve-Rooted $c.Logs
+
+foreach ($f in $exe, $model) {
+    if (-not (Test-Path $f)) { Write-Output "ABORT: missing $f (run install.ps1)"; exit 1 }
+}
+New-Item -ItemType Directory -Force $logs | Out-Null
+
+# A VPN or LAN address may not exist yet right after boot, and binding a missing address fails.
+$loopback = $c.BindAddress -in "127.0.0.1", "0.0.0.0", "localhost"
+if (-not $loopback) {
+    for ($i = 0; $i -lt 60 -and -not (Get-NetIPAddress -IPAddress $c.BindAddress -ErrorAction SilentlyContinue); $i++) {
+        Start-Sleep -Seconds 2
+    }
+    if (-not (Get-NetIPAddress -IPAddress $c.BindAddress -ErrorAction SilentlyContinue)) {
+        Write-Output "ABORT: $($c.BindAddress) is not assigned on this PC (network or VPN down?)"
+        exit 1
+    }
+}
+
+# Replace only a previous server on this port.
+Get-NetTCPConnection -LocalPort $c.Port -State Listen -ErrorAction SilentlyContinue |
+    ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+Start-Sleep -Seconds 3
+
+# Preflight after the kill so freed VRAM counts. Exceeding VRAM on Windows does not fail
+# cleanly: allocations can spill to system RAM and run ~10x slower.
+$freeGiB = [double](nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | Select-Object -First 1) / 1024
+Write-Output ("preflight: need ~{0:N1} GiB VRAM, free {1:N1} GiB" -f $c.NeedVramGiB, $freeGiB)
+if ($c.NeedVramGiB -gt $freeGiB) {
+    Write-Output "ABORT: not enough free VRAM. Is another model server using the GPU?"
+    exit 1
+}
+
+# Keep the previous run's log instead of overwriting it.
+foreach ($name in "ninfer.err", "ninfer.out") {
+    $current = Join-Path $logs $name
+    if ((Test-Path $current) -and (Get-Item $current).Length -gt 0) {
+        $item  = Get-Item $current
+        $stamp = $item.LastWriteTime.ToString("yyyyMMdd-HHmmss")
+        Move-Item $current (Join-Path $logs ("{0}-{1}{2}" -f $item.BaseName, $stamp, $item.Extension)) -Force
+    }
+    $base = [IO.Path]::GetFileNameWithoutExtension($name)
+    $ext  = [IO.Path]::GetExtension($name)
+    Get-ChildItem $logs -Filter "$base-*$ext" | Sort-Object LastWriteTime -Descending |
+        Select-Object -Skip $c.KeepLogs | Remove-Item -Force
+}
+
+$serveArgs = @($model,
+    "--spec", $c.Spec, "--draft-tokens", "$($c.DraftTokens)", "--lm-head-draft",
+    "--host", $c.BindAddress, "--port", "$($c.Port)", "--model-id", $c.ModelId,
+    "--max-context", "$($c.MaxContext)", "--kv-capacity", "auto", "--kv-dtype", $c.KvDtype,
+    "--device-state-slots", "1", "--prefill-chunk", "8192",
+    "--max-concurrency", "$($c.Concurrency)",
+    "--host-state-slots", "$($c.HostStateSlots)", "--host-kv-mib", "$($c.HostKvMiB)",
+    # Measured context-cache bounds from upstream's launchers: the defaults gave 1/5 round-2
+    # cache hits on resent prompts, these give 5/5.
+    "--max-shared-prefixes", "7", "--max-private-continuations", "8",
+    "--max-long-anchors-per-continuation", "4",
+    "--preserve-thinking", "--default-thinking-budget", "$($c.ThinkingBudget)",
+    "--pending-timeout-ms", "600000")
+
+# Quote any argument with a space: Start-Process joins -ArgumentList unquoted.
+$quoted = $serveArgs | ForEach-Object { if ("$_" -match '\s') { '"' + $_ + '"' } else { "$_" } }
+$p = Start-Process -FilePath $exe -ArgumentList $quoted -PassThru -WindowStyle Hidden `
+    -RedirectStandardOutput (Join-Path $logs "ninfer.out") -RedirectStandardError (Join-Path $logs "ninfer.err")
+Write-Output "ninfer starting (pid $($p.Id))"
+
+$probe = if ($c.BindAddress -eq "0.0.0.0") { "127.0.0.1" } else { $c.BindAddress }
+$ok = $false
+for ($i = 0; $i -lt 90; $i++) {
+    Start-Sleep -Seconds 2
+    if ($p.HasExited) { Write-Output "process exited early - see $(Join-Path $logs 'ninfer.err')"; break }
+    try { $null = Invoke-WebRequest "http://${probe}:$($c.Port)/health" -TimeoutSec 3 -UseBasicParsing; $ok = $true; break } catch {}
+}
+Write-Output "ninfer on $($c.BindAddress):$($c.Port) -> $(if ($ok) { 'READY' } else { 'FAILED' })"
+if (-not $ok) { exit 1 }

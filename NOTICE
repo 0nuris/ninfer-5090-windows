@@ -59,7 +59,8 @@ Third-Party Software and Attributions:
 
 8. FFmpeg Windows Shared Binaries (used in multimodal / vision builds)
    Developed by the FFmpeg developers (https://ffmpeg.org/)
-   Binaries from BtbN/FFmpeg-Builds (https://github.com/BtbN/FFmpeg-Builds), LGPL v2.1 variant.
+   Binaries from BtbN/FFmpeg-Builds (https://github.com/BtbN/FFmpeg-Builds), LGPL variant
+   (current builds are configured with --enable-version3, i.e. LGPL v3 or later).
    The build downloads the LGPL variant so no GPL component enters the release archive, and the
    archive ships this notice beside the DLLs.
 
@@ -75,3 +76,23 @@ made the change, in docs/upstream-reports/fork-divergence.md. The Windows layer'
 those upstream does not have at all: src/artifact/file_io.cpp (Win32 unbuffered positional reads),
 src/core/uint128.h (MSVC has no __int128), the launchers, the release tooling under tools/release,
 and the Windows compiler and CUDA options in CMakeLists.txt and src/CMakeLists.txt.
+
+========================================================================
+Modifications in the NInfer 512K fork (Apache License 2.0, Section 4b):
+========================================================================
+Changes on top of headpiece747/ninfer-5090-windows v1.1.0 (90575c2):
+
+- src/core/arena.cu: pinned host allocations pre-extend the pagefile and, on refusal, convert
+  standby memory to free pages and retry. Ported from alphastorm/ninfer
+  (https://github.com/alphastorm/ninfer, Apache-2.0; omp-ninfer#48).
+- YaRN context extension to 524,288 tokens: include/ninfer/ops/rope.h,
+  include/ninfer/ops/softmax_attention.h, src/ops/kernel/rope.cuh, src/ops/launcher/rope.{cu,h},
+  src/ops/wrapper/rope.cpp, src/ops/softmax_attention/dense/causal_cache/small_t_*.cuh,
+  src/models/qwen3_5/execution/{attention,text}.{cpp,h},
+  src/models/qwen3_5/program/{planning/startup.cpp,program_impl.cpp,round_buffers.{cpp,h}},
+  apps/cli/options.cpp, tests/ops/test_rope.cpp, tests/convert/test_qwen3_5.py and
+  tools/yarn_table_check.py. Ported from kido5217/ninfer-yarn PR #14
+  (https://github.com/kido5217/ninfer-yarn, Apache-2.0).
+- build_windows.bat: escaped parentheses in an if-block echo; FFmpeg extracted with tar.
+- deploy/windows/: configuration, launcher, watchdog, installer and release tooling for the
+  524K profile. New in this fork.

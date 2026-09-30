@@ -70,3 +70,6 @@ test_image.png
 
 # CodeGraph index - local to each machine
 .codegraph/
+
+# NInfer 512K release staging (deploy/windows/stage-release.ps1)
+dist/

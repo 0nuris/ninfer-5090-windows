@@ -2,6 +2,13 @@
 
 > Native Windows port of NInfer. Selected checkpoints. Maximum single-GPU inference performance.
 
+> **This fork: 524K context.** Adds YaRN context extension (Qwen3.8-27B to **524,288 tokens** on
+> one RTX 5090, validated by full-context retrieval, perplexity and GSM8K checks), a fix for
+> Windows refusing the engine's pinned host cache, and a Windows install/launch/watchdog kit.
+> Start with **[deploy/windows/README.md](deploy/windows/README.md)**, or download the release zip.
+> At `--max-context` 262,144 or less the engine is byte-identical to upstream, so everything
+> below still applies. Changes are listed at the end of [NOTICE](NOTICE).
+
 This repository is the native Windows port of [Neroued/ninfer](https://github.com/Neroued/ninfer):
 the same C++/CUDA engine, built with MSVC and CUDA 13.3 on Windows 11 x64, with no WSL2 and no
 Docker. It runs text, image, and video prompts through a local CLI or OpenAI-/Anthropic-compatible
