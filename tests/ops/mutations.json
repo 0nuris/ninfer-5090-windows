@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "note": "Declarative perturbation coverage. For each mutation, tools/release/check_test_mutation.py runs the named test twice through ctest: once clean, which must pass, and once with the variable set, which must fail. The clean run is the control -- without it a test that is permanently red satisfies every mutation assertion, and the gate would pass on a suite that cannot pass at all. A mutation whose id is declared but whose bits are not implemented in the kernel also fails the gate, because the mutated run stays green; that is the intended loud failure, not a silent pass. Mutation ids are bit flags: see the seam in src/ops/kernel/topk_logprobs.cuh and tools/release/check_test_mutation.py.",
+  "ops": {
+    "topk_logprobs": {
+      "env": "NINFER_OP_MUTATION",
+      "test": "ninfer_topk_logprobs_test",
+      "mutations": [
+        {
+          "id": 1,
+          "site": "topk_precedes: tie-break on equal values becomes descending row index",
+          "why": "Every entry the threshold bin selects is interchangeable in value, so the row index is the only thing ordering the result. Nothing in the code shows the ascending rule is exercised, and picking the wrong K entries is a silent wrong answer rather than a crash."
+        },
+        {
+          "id": 2,
+          "site": "bitonic sort: direction becomes ascending",
+          "why": "At the final stage i & 256 is 0 for every valid i, so this single branch decides the whole output order. It was inverted once, during development, and the symptom was the -INF padding leading slot 0 -- a plausible-looking result rather than an obvious failure."
+        }
+      ]
+    }
+  }
+}

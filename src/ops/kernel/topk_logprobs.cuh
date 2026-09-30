@@ -97,15 +97,23 @@ __device__ __forceinline__ int topk_threshold_bin(const int* histogram, int& ran
 
 // Descending by value, ascending by row on equal values. Two entries can compare equal in both
 // components only if they are the same entry, so this is a total order and the sort is deterministic.
-__device__ __forceinline__ bool topk_precedes(float a, int ai, float b, int bi) {
+__device__ __forceinline__ bool topk_precedes(float a, int ai, float b, int bi, int mutation) {
     if (a != b) { return a > b; }
+#if defined(NINFER_OP_TEST_MUTATIONS)
+    // Mutation seam. The tie-break is the single load-bearing decision for the "ascending row index"
+    // half of the contract and the one a reading of this file cannot check, so it is the seam a
+    // perturbation test flips. Compiled only where BUILD_TESTING is on, which is the test tree alone;
+    // a shipping binary expands to the original two lines and this costs nothing.
+    if ((mutation & 1) != 0) { return ai > bi; }
+#endif
     return ai < bi;
 }
 
 template <int BlockSize>
 __launch_bounds__(BlockSize) __global__
     void topk_logprobs_kernel(const __nv_bfloat16* logits, std::int32_t* indices, float* logprobs,
-                              std::int32_t valid_rows, std::int32_t physical_rows, std::int32_t k) {
+                              std::int32_t valid_rows, std::int32_t physical_rows, std::int32_t k,
+                              int mutation) {
     static_assert(BlockSize == kTopkLogprobsBlock, "one bin per thread is assumed");
     const std::int32_t column = static_cast<std::int32_t>(blockIdx.x);
     const std::int64_t base   = static_cast<std::int64_t>(column) * physical_rows;
@@ -284,11 +292,20 @@ __launch_bounds__(BlockSize) __global__
             for (int i = tid; i < kTopkLogprobsWidth; i += BlockSize) {
                 const int partner = i ^ stride;
                 if (partner > i) {
+#if defined(NINFER_OP_TEST_MUTATIONS)
+                    const bool ascending = (mutation & 2) != 0;
+                    const bool take = ((i & size) == 0) != ascending
+                                          ? topk_precedes(s_value[partner], s_index[partner], s_value[i],
+                                                          s_index[i], mutation)
+                                          : topk_precedes(s_value[i], s_index[i], s_value[partner],
+                                                          s_index[partner], mutation);
+#else
                     const bool take = ((i & size) == 0)
                                           ? topk_precedes(s_value[partner], s_index[partner], s_value[i],
-                                                          s_index[i])
+                                                          s_index[i], mutation)
                                           : topk_precedes(s_value[i], s_index[i], s_value[partner],
-                                                          s_index[partner]);
+                                                          s_index[partner], mutation);
+#endif
                     if (take) {
                         const float tv  = s_value[i];
                         const int ti    = s_index[i];

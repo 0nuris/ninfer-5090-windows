@@ -13,6 +13,20 @@ ninfer_cuda_non_rdc_archive(ninfer_nvfp4_non_rdc)
 target_link_libraries(ninfer_nvfp4_non_rdc PRIVATE ninfer_core CUDA::cudart CUDA::cuda_driver)
 
 include(basic_sources.cmake)
+
+# Perturbation seam, scoped to the test tree. An Op's kernel may carry small mutation branches behind
+# NINFER_OP_TEST_MUTATIONS, selected per test run by the launcher from NINFER_OP_MUTATION, and
+# tools/release/check_test_mutation.py asserts the suite actually goes red when one is selected.
+#
+# The scope is the whole point. `build` and `build-test` are separate configurations and BUILD_TESTING
+# is OFF in the former, so the define -- and the branches it guards -- exist only in a tree that also
+# builds tests. A shipping binary compiles the unmutated code, so the seam cannot be reached in a
+# release. PUBLIC rather than PRIVATE so the test translation units can detect that the binary they
+# are linked against supports mutations at all; a build without the seam must fail the gate loudly
+# rather than pass it by never going red.
+if(BUILD_TESTING)
+  target_compile_definitions(ninfer_ops PUBLIC NINFER_OP_TEST_MUTATIONS=1)
+endif()
 include("${CMAKE_CURRENT_LIST_DIR}/attn_input_proj/sources.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/candidate_selector/sources.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/context_kv_materialize/sources.cmake")
