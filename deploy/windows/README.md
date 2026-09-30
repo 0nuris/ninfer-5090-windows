@@ -21,21 +21,29 @@ and a fix that lets Windows pin the engine's host cache reliably.
 1. Download `ninfer-512k-<version>-win64-rtx5090.zip` from Releases and check it against the
    SHA-256 in the release notes. Extract it anywhere without spaces in the path, e.g. `C:\ninfer`.
 2. Optionally edit `ninfer.config.ps1` (network address, context, concurrency, cache sizes).
-3. From an **elevated** PowerShell in that folder:
+3. From a PowerShell in that folder (no administrator rights needed):
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\install.ps1
    ```
-   It checks the GPU, driver, runtime and RAM, downloads the 19.4 GB model (resumable) and
-   verifies its SHA-256, and adds firewall rules that block the engine's outbound traffic.
+   It checks the GPU, driver, runtime and RAM, then downloads the 19.4 GB model (resumable) and
+   verifies its SHA-256. It changes nothing else on the system.
 4. Start it:
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\start-ninfer.ps1
    ```
-   It waits for `/health` and prints `READY` (about 15 s after the first start).
+   It waits for `/health` and prints `READY` (about 15 s after the first start). Stop it by
+   ending `ninfer-serve.exe` (Task Manager, or `Stop-Process -Name ninfer-serve`).
 
-To start it at boot and restart it after crashes, re-run `install.ps1 -RegisterTask`. That
-registers a scheduled task running `ensure-ninfer.ps1` at boot and every 5 minutes, whether or
-not anyone is signed in. It asks for the account's password, which Task Scheduler stores.
+### Optional system integration
+
+None of these are needed to run the server. Each changes system settings, so run
+`install.ps1` with it from an **elevated** PowerShell:
+
+| Switch | Effect |
+|---|---|
+| `-BlockOutbound` | Windows Firewall rules blocking the engine's outbound connections. It never needs them for text; only image/video URLs in requests would be fetched. |
+| `-AllowFrom <range>` | Inbound firewall rule for the port, to serve other devices (see *Serving other devices*). |
+| `-RegisterTask` | Scheduled task that runs `ensure-ninfer.ps1` at boot and every 5 minutes, whether or not anyone is signed in, restarting the server after a reboot or crash. Asks for the account's password, which Task Scheduler stores. |
 
 ## Use it
 
@@ -52,9 +60,10 @@ than text, non-empty `include`, `n > 1`, ...) are refused with a named error ins
 See the upstream README's "Client compatibility" section.
 
 **Serving other devices.** Set `BindAddress` in `ninfer.config.ps1` to this PC's LAN or VPN
-(e.g. Tailscale) address, then allow the range in:
-`install.ps1 -AllowFrom 192.168.1.0/24` (or `100.64.0.0/10` for Tailscale). There is no
-authentication, so anything that can reach the port can use the model.
+(e.g. Tailscale) address. Windows Firewall normally blocks inbound connections to it, so either
+allow them your own way or run `install.ps1 -AllowFrom 192.168.1.0/24` (or `100.64.0.0/10` for
+Tailscale) from an elevated PowerShell. There is no authentication, so anything that can reach
+the port can use the model.
 
 ## What to expect
 
@@ -88,10 +97,11 @@ cache and ran about 2× slower than one at a time. Default: 1.
 ## Operating it
 
 - Logs: `logs\ninfer.err` (per-request speed, cache hits, errors). Each start keeps the previous
-  log as `ninfer-<timestamp>.err`; the newest 20 are kept. The watchdog writes `logs\watchdog.log`.
+  log as `ninfer-<timestamp>.err`; the newest 20 are kept.
 - Watch live: `Get-Content logs\ninfer.err -Wait -Tail 0 | Select-String 'req#\d+ done|WARN|ERROR'`
-- Pause the watchdog (to use the GPU for something else): create an empty `ninfer.disabled` file
-  next to the scripts, then stop `ninfer-serve`. Delete the file to hand the GPU back.
+- With `-RegisterTask`: the watchdog writes `logs\watchdog.log`. To pause it (to use the GPU
+  for something else), create an empty `ninfer.disabled` file next to the scripts, then stop
+  `ninfer-serve`. Delete the file to hand the GPU back.
 - Optional hardening: in NVIDIA Control Panel, set *CUDA - Sysmem Fallback Policy* to
   *Prefer No Sysmem Fallback* for `ninfer-serve.exe`, so running out of VRAM fails loudly instead
   of spilling to system RAM.

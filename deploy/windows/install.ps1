@@ -1,26 +1,35 @@
 <#
 .SYNOPSIS
-    One-time setup for NInfer 512K on Windows: prerequisite checks, model download with SHA-256
-    verification, firewall rules, and (optionally) the NInferServer boot/watchdog task.
+    Setup for NInfer 512K on Windows: prerequisite checks and model download with SHA-256
+    verification. Firewall rules and a boot/watchdog task are optional.
 
 .DESCRIPTION
-    Run from an elevated PowerShell in the release folder. Safe to re-run: finished steps are
-    skipped. Settings come from ninfer.config.ps1 (edit it first if you want to serve other
-    devices or change the context/concurrency).
+    By default this only checks prerequisites and downloads/verifies the model into the release
+    folder: no administrator rights, and nothing on the system is changed. Safe to re-run.
+    Settings come from ninfer.config.ps1.
+
+    The switches below change system settings and therefore need an elevated PowerShell. Use them
+    only if you want them; the server runs fine without any of them.
+
+.PARAMETER BlockOutbound
+    Add Windows Firewall rules blocking outbound connections from the engine executables. The
+    server does not need outbound access for text use (it would only fetch image/video URLs).
 
 .PARAMETER AllowFrom
-    Remote address range allowed to reach the server port, e.g. 192.168.1.0/24 for a LAN or
-    100.64.0.0/10 for Tailscale. Omit to allow nothing inbound (fine for BindAddress 127.0.0.1).
+    Add an inbound Windows Firewall rule for the server port from this address range, e.g.
+    192.168.1.0/24 for a LAN or 100.64.0.0/10 for Tailscale. Only needed to serve other devices,
+    together with a non-loopback BindAddress in ninfer.config.ps1.
 
 .PARAMETER RegisterTask
-    Also register the NInferServer scheduled task (runs ensure-ninfer.ps1 at boot and every
-    5 minutes, whether or not anyone is signed in). Prompts for the account's password, which
-    Task Scheduler stores; use -TaskUser to run it as another local account.
+    Register the NInferServer scheduled task (runs ensure-ninfer.ps1 at boot and every 5
+    minutes, whether or not anyone is signed in). Prompts for the account's password, which Task
+    Scheduler stores; use -TaskUser to run it as another local account.
 
 .PARAMETER SkipModel
-    Do not download the model (for example when copying it from another machine).
+    Do not download or verify the model (for example when copying it from another machine).
 #>
 param(
+    [switch]$BlockOutbound,
     [string]$AllowFrom,
     [switch]$RegisterTask,
     [string]$TaskUser = "$env:USERDOMAIN\$env:USERNAME",
@@ -45,9 +54,18 @@ function Step($msg) { Write-Host "`n== $msg" -ForegroundColor Cyan }
 function Warn($msg) { Write-Host "   WARN: $msg" -ForegroundColor Yellow }
 function Ok($msg)   { Write-Host "   ok: $msg" -ForegroundColor Green }
 
-$admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-    [Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $admin) { throw "Run install.ps1 from an elevated (Administrator) PowerShell." }
+# Only the optional system changes need elevation; check before the long download, not after.
+$systemChanges = @()
+if ($BlockOutbound) { $systemChanges += "-BlockOutbound" }
+if ($AllowFrom)     { $systemChanges += "-AllowFrom" }
+if ($RegisterTask)  { $systemChanges += "-RegisterTask" }
+if ($systemChanges) {
+    $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $admin) {
+        throw "These options change system settings and need an elevated (Administrator) PowerShell: $($systemChanges -join ', '). Without them, install.ps1 only checks prerequisites and downloads the model, which needs no elevation."
+    }
+}
 
 Step "Prerequisites"
 $gpu = (nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader | Select-Object -First 1)
@@ -97,16 +115,18 @@ if (-not $SkipModel) {
     Ok "SHA-256 verified"
 }
 
-Step "Firewall"
-$bin = Split-Path $exe
-foreach ($f in Get-ChildItem $bin -Filter "ninfer*.exe") {
-    $rule = "NInfer 512K - block outbound ($($f.Name))"
-    if (-not (Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue)) {
-        # The server never needs to open outbound connections for text use; this also disables
-        # fetching image/video URLs. Replies to inbound requests are unaffected.
-        New-NetFirewallRule -DisplayName $rule -Direction Outbound -Action Block -Program $f.FullName -Profile Any | Out-Null
+if ($BlockOutbound -or $AllowFrom) { Step "Firewall" }
+if ($BlockOutbound) {
+    $bin = Split-Path $exe
+    foreach ($f in Get-ChildItem $bin -Filter "ninfer*.exe") {
+        $rule = "NInfer 512K - block outbound ($($f.Name))"
+        if (-not (Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue)) {
+            # The server never needs to open outbound connections for text use; this also
+            # disables fetching image/video URLs. Replies to inbound requests are unaffected.
+            New-NetFirewallRule -DisplayName $rule -Direction Outbound -Action Block -Program $f.FullName -Profile Any | Out-Null
+        }
+        Ok $rule
     }
-    Ok $rule
 }
 if ($AllowFrom) {
     $rule = "NInfer 512K - allow inbound $($c.Port)"
@@ -117,8 +137,6 @@ if ($AllowFrom) {
     if ($c.BindAddress -eq "127.0.0.1") {
         Warn "BindAddress is 127.0.0.1, so other devices still cannot connect; set it in ninfer.config.ps1"
     }
-} else {
-    Write-Host "   no inbound rule (pass -AllowFrom to serve other devices)"
 }
 
 if ($RegisterTask) {
@@ -135,9 +153,15 @@ if ($RegisterTask) {
         -Settings $settings -RunLevel Limited -User $cred.UserName -Password $cred.GetNetworkCredential().Password `
         -Description "Keeps NInfer 512K up on $($c.BindAddress):$($c.Port) ($Root\ensure-ninfer.ps1)" | Out-Null
     Ok "registered; it needs 'Log on as a batch job' for $TaskUser if that account is not an administrator"
+}
+
+Step "Done"
+if ($RegisterTask) {
     Write-Host "   start now: Start-ScheduledTask NInferServer"
 } else {
-    Step "Done"
-    Write-Host "   start the server: powershell -File `"$(Join-Path $Root 'start-ninfer.ps1')`""
-    Write-Host "   or re-run with -RegisterTask to start it at boot and restart it after crashes"
+    Write-Host "   start the server: powershell -ExecutionPolicy Bypass -File `"$(Join-Path $Root 'start-ninfer.ps1')`""
+}
+if (-not $systemChanges) {
+    Write-Host "   no system settings were changed. Optional (elevated PowerShell): -BlockOutbound,"
+    Write-Host "   -AllowFrom <range> to serve other devices, -RegisterTask to start at boot."
 }
