@@ -1,9 +1,10 @@
 # Builds the Linux release tarball on Ubuntu 24.04 with CUDA 13.3. Compiling needs no GPU, so a
 # standard runner is enough (free for public repositories); the result is not run here.
 #
-# - Actions tab -> "linux-build" -> Run workflow: builds a tarball as a workflow artifact, and
-#   attaches it to an existing release if release_tag is given.
-# - Publishing a GitHub release builds and attaches the tarball to that release automatically.
+# Actions tab -> "linux-build" -> Run workflow: builds a tarball as a workflow artifact, and
+# attaches it to an existing release if release_tag is given. It does not run on release
+# publication: builds are not byte-reproducible, so an automatic rebuild would replace a tarball
+# whose SHA-256 is already in the release notes.
 name: linux-build
 
 on:
@@ -16,8 +17,6 @@ on:
         description: Existing release tag to attach the tarball to (leave empty for artifact only)
         required: false
         default: ""
-  release:
-    types: [published]
 
 permissions:
   contents: write
