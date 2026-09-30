@@ -51,9 +51,11 @@ while nobody is signed in needs a sign-in method your environment allows (for Wi
 Scheduler that is a stored password or an S4U task, and the account needs *Log on as a batch job*
 if it is not an administrator).
 
-**Firewall.** For text use the engine never opens outbound connections (only image/video URLs in
-requests would be fetched), so blocking its outbound traffic costs nothing if you want that.
-Serving other devices needs an inbound rule for `Port` (see *Serving other devices*).
+**Firewall.** As configured by this kit (vision off), the server never opens outbound
+connections: requests containing images or video are refused before anything is fetched. Only an
+engine started with `--vision` would fetch image/video URLs from requests. Blocking its outbound
+traffic therefore costs nothing if you want that. Serving other devices needs an inbound rule for
+`Port` (see *Serving other devices*).
 
 ## Use it
 
