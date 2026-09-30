@@ -68,11 +68,17 @@ $serveArgs = @($model,
     "--preserve-thinking", "--default-thinking-budget", "$($c.ThinkingBudget)",
     "--pending-timeout-ms", "600000")
 
-# Quote any argument with a space: Start-Process joins -ArgumentList unquoted.
+# Launch through cmd.exe, not Start-Process -RedirectStandard*: that form makes the server
+# inherit this script's own stdout, so a caller reading this script through a pipe
+# (Tee-Object, a service wrapper, another program) would wait until the server exits.
+# Start-Process without redirection passes no handles down; cmd writes the server's output to
+# the log files and stays alive exactly as long as the server, so $p.HasExited still works.
 $quoted = $serveArgs | ForEach-Object { if ("$_" -match '\s') { '"' + $_ + '"' } else { "$_" } }
-$p = Start-Process -FilePath $exe -ArgumentList $quoted -PassThru -WindowStyle Hidden `
-    -RedirectStandardOutput (Join-Path $logs "ninfer.out") -RedirectStandardError (Join-Path $logs "ninfer.err")
-Write-Output "ninfer starting (pid $($p.Id))"
+$line = '"{0}" {1} > "{2}" 2> "{3}"' -f $exe, ($quoted -join ' '),
+        (Join-Path $logs "ninfer.out"), (Join-Path $logs "ninfer.err")
+$p = Start-Process -FilePath "$env:WINDIR\System32\cmd.exe" -ArgumentList "/d /s /c `"$line`"" `
+    -PassThru -WindowStyle Hidden
+Write-Output "ninfer starting (launcher pid $($p.Id))"
 
 $probe = if ($c.BindAddress -eq "0.0.0.0") { "127.0.0.1" } else { $c.BindAddress }
 $ok = $false
