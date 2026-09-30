@@ -26,18 +26,28 @@ if (-not $loopback) {
     }
 }
 
-# Replace only a previous server on this port.
-Get-NetTCPConnection -LocalPort $c.Port -State Listen -ErrorAction SilentlyContinue |
-    ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
-Start-Sleep -Seconds 3
+# Replace a previous ninfer-serve on this port, but never stop an unrelated program.
+$holders = Get-NetTCPConnection -LocalPort $c.Port -State Listen -ErrorAction SilentlyContinue |
+    Select-Object -ExpandProperty OwningProcess -Unique
+foreach ($holder in $holders) {
+    $proc = Get-Process -Id $holder -ErrorAction SilentlyContinue
+    if (-not $proc) { continue }
+    if ($proc.ProcessName -ne "ninfer-serve") {
+        Write-Output "ABORT: port $($c.Port) is in use by $($proc.ProcessName) (pid $holder). Stop it or set Port in ninfer.config.ps1."
+        exit 1
+    }
+    Stop-Process -Id $holder -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 3   # let the driver release its VRAM before the check below
+}
 
-# Preflight after the kill so freed VRAM counts. Exceeding VRAM on Windows does not fail
-# cleanly: allocations can spill to system RAM and run ~10x slower.
+# Advisory only: the engine sizes its KV pool from the VRAM actually free and refuses with an
+# exact "minimum Engine runtime reservation" message if the profile does not fit, so it never
+# starts in a spilling state. nvidia-smi lists GPU 0 first, which is normally the engine's
+# device on a single-GPU system.
 $freeGiB = [double](nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | Select-Object -First 1) / 1024
-Write-Output ("preflight: need ~{0:N1} GiB VRAM, free {1:N1} GiB" -f $c.NeedVramGiB, $freeGiB)
+Write-Output ("VRAM free {0:N1} GiB (this profile typically uses ~{1:N1} GiB)" -f $freeGiB, $c.NeedVramGiB)
 if ($c.NeedVramGiB -gt $freeGiB) {
-    Write-Output "ABORT: not enough free VRAM. Is another model server using the GPU?"
-    exit 1
+    Write-Output "WARN: less VRAM free than this profile typically uses. If startup fails, close other GPU programs or lower MaxContext / Concurrency / HostKvMiB."
 }
 
 # Keep the previous run's log instead of overwriting it.

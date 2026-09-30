@@ -39,7 +39,7 @@ $NInferConfig = @{
     # Reasoning cap per request (tokens); clients can override per request.
     ThinkingBudget = 4096
 
-    # Preflight: refuse to start unless this much VRAM is free (GiB). The profile above uses
-    # ~29.5 GiB at Concurrency 1 and ~30 GiB at 3.
+    # Typical VRAM use of this profile (GiB), for start-ninfer.ps1's advisory warning only; the
+    # engine itself decides whether the profile fits. ~29.5 GiB at Concurrency 1, ~30 at 3.
     NeedVramGiB = 29.5
 }

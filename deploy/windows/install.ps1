@@ -22,8 +22,16 @@
 
 .PARAMETER RegisterTask
     Register the NInferServer scheduled task (runs ensure-ninfer.ps1 at boot and every 5
-    minutes, whether or not anyone is signed in). Prompts for the account's password, which Task
-    Scheduler stores; use -TaskUser to run it as another local account.
+    minutes, whether or not anyone is signed in). For your own account no password is stored
+    (an S4U task, which only needs local resources - all this server uses). Use -TaskUser to run
+    it as another local account, or -StorePassword to store your password instead of S4U; both
+    prompt for the password.
+
+.PARAMETER TaskUser
+    Account the task runs as (default: you). Not elevated either way.
+
+.PARAMETER StorePassword
+    Register with a stored password instead of S4U, e.g. if your environment refuses S4U tasks.
 
 .PARAMETER SkipModel
     Do not download or verify the model (for example when copying it from another machine).
@@ -33,6 +41,7 @@ param(
     [string]$AllowFrom,
     [switch]$RegisterTask,
     [string]$TaskUser = "$env:USERDOMAIN\$env:USERNAME",
+    [switch]$StorePassword,
     [switch]$SkipModel
 )
 
@@ -141,7 +150,6 @@ if ($AllowFrom) {
 
 if ($RegisterTask) {
     Step "Scheduled task NInferServer (as $TaskUser)"
-    $cred = Get-Credential -UserName $TaskUser -Message "Password for $TaskUser (stored by Task Scheduler for the NInfer task)"
     $action = New-ScheduledTaskAction -Execute "powershell.exe" `
         -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $Root 'ensure-ninfer.ps1')`""
     $boot = New-ScheduledTaskTrigger -AtStartup
@@ -149,10 +157,29 @@ if ($RegisterTask) {
     $watchdog = New-ScheduledTaskTrigger -Once -At (Get-Date).Date -RepetitionInterval (New-TimeSpan -Minutes 5)
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
-    Register-ScheduledTask -TaskName "NInferServer" -Force -Action $action -Trigger @($boot, $watchdog) `
-        -Settings $settings -RunLevel Limited -User $cred.UserName -Password $cred.GetNetworkCredential().Password `
-        -Description "Keeps NInfer 512K up on $($c.BindAddress):$($c.Port) ($Root\ensure-ninfer.ps1)" | Out-Null
-    Ok "registered; it needs 'Log on as a batch job' for $TaskUser if that account is not an administrator"
+    $task = @{
+        TaskName    = "NInferServer"
+        Force       = $true
+        Action      = $action
+        Trigger     = @($boot, $watchdog)
+        Settings    = $settings
+        Description = "Keeps NInfer 512K up on $($c.BindAddress):$($c.Port) ($Root\ensure-ninfer.ps1)"
+    }
+    $self = $TaskUser -in "$env:USERDOMAIN\$env:USERNAME", $env:USERNAME
+    if ($self -and -not $StorePassword) {
+        $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Limited
+        try {
+            Register-ScheduledTask @task -Principal $principal -ErrorAction Stop | Out-Null
+            Ok "registered for $TaskUser without a stored password (S4U)"
+        } catch {
+            throw "Registering the S4U task failed ($($_.Exception.Message.Trim())). Re-run with -StorePassword."
+        }
+    } else {
+        $cred = Get-Credential -UserName $TaskUser -Message "Password for $TaskUser (stored by Task Scheduler for the NInfer task)"
+        Register-ScheduledTask @task -RunLevel Limited -User $cred.UserName -Password $cred.GetNetworkCredential().Password | Out-Null
+        Ok "registered for $TaskUser with a stored password; re-run this if that password changes"
+    }
+    Write-Host "   a non-administrator task account needs the 'Log on as a batch job' right (secpol.msc)"
 }
 
 Step "Done"

@@ -19,7 +19,7 @@ and a fix that lets Windows pin the engine's host cache reliably.
 ## Install
 
 1. Download `ninfer-512k-<version>-win64-rtx5090.zip` from Releases and check it against the
-   SHA-256 in the release notes. Extract it anywhere without spaces in the path, e.g. `C:\ninfer`.
+   SHA-256 in the release notes. Extract it to any folder, e.g. `C:\ninfer`.
 2. Optionally edit `ninfer.config.ps1` (network address, context, concurrency, cache sizes).
 3. From a PowerShell in that folder (no administrator rights needed):
    ```powershell
@@ -43,7 +43,7 @@ None of these are needed to run the server. Each changes system settings, so run
 |---|---|
 | `-BlockOutbound` | Windows Firewall rules blocking the engine's outbound connections. It never needs them for text; only image/video URLs in requests would be fetched. |
 | `-AllowFrom <range>` | Inbound firewall rule for the port, to serve other devices (see *Serving other devices*). |
-| `-RegisterTask` | Scheduled task that runs `ensure-ninfer.ps1` at boot and every 5 minutes, whether or not anyone is signed in, restarting the server after a reboot or crash. Asks for the account's password, which Task Scheduler stores. |
+| `-RegisterTask` | Scheduled task that runs `ensure-ninfer.ps1` at boot and every 5 minutes, whether or not anyone is signed in, restarting the server after a reboot or crash. Runs as you without storing a password (S4U). Add `-TaskUser <account>` to run it as another account, or `-StorePassword` if your environment refuses S4U tasks; both ask for that account's password. |
 
 ## Use it
 
@@ -112,10 +112,12 @@ cache and ran about 2× slower than one at a time. Default: 1.
 |---|---|
 | `cudaMallocHost failed ... out of memory` at startup | Lower `HostKvMiB` (and/or `HostStateSlots`). Windows caps pinned memory at ~50% of RAM. |
 | `minimum Engine runtime reservation requires ...` | Not enough VRAM for the profile: close other GPU programs, or lower `Concurrency` / `MaxContext`. |
-| `ABORT: not enough free VRAM` | Another model server holds the GPU. |
+| `WARN: less VRAM free than this profile typically uses` | Advisory. If startup then fails, close other GPU programs (another model server, games, GPU-heavy apps) or lower the profile. |
+| `ABORT: port 8088 is in use by <program>` | Another program listens on the port; the script never stops it. Stop it or change `Port`. |
 | Process exits immediately, `0xC0000135` | A DLL is missing: keep `bin\` intact, and install the VC++ runtime. |
 | HTTP 400 `context length exceeded` | Prompt plus `max_tokens` is above `MaxContext`. |
-| Scheduled task result `0x8007052E` | The stored password changed: re-run `install.ps1 -RegisterTask`. |
+| Scheduled task result `0x8007052E` | With a stored password (`-TaskUser`/`-StorePassword`): the password changed. Re-run `install.ps1 -RegisterTask` with the same options. |
+| `-RegisterTask` fails with access denied | The environment refuses S4U tasks: add `-StorePassword`. A non-administrator task account also needs the *Log on as a batch job* right (`secpol.msc`). |
 
 ## Building from source
 

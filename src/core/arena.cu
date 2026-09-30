@@ -60,7 +60,7 @@ void free_pinned(void*& ptr) noexcept {
 
 #if defined(_WIN32)
 // Ported from alphastorm/ninfer (omp-ninfer#48): Windows can refuse a pinned allocation for two
-// different reasons, and both were seen on this 31.5 GiB host.
+// different reasons; both were observed on a 32 GB reference host.
 //
 // 1. Pagefile race (alphastorm v0.6.7, b0e8c2fa). A pin charges its size plus a page-lock
 //    remainder; if free commit covers the size but not the remainder, the pin races the
@@ -73,8 +73,8 @@ void extend_commit_limit_for(std::size_t size_bytes) noexcept {
 }
 
 // 2. Standby file cache (alphastorm 831e8a57). Pins are served from free pages, not standby, and
-//    loading the 18 GiB artifact fills standby: here a 1 GiB host-KV pin failed with 24 GiB
-//    "free" of which 15.1 GiB was standby, and the same size pinned 20 minutes earlier.
+//    loading an 18 GiB artifact fills standby: on the reference host a 1 GiB host-KV pin failed
+//    with 24 GiB "free" of which 15.1 GiB was standby, and the same size pinned 20 minutes earlier.
 //    Committing and touching an equal pageable region makes the memory manager repurpose standby
 //    pages; releasing it returns them as free pages the driver can pin. Needs no privilege.
 bool convert_standby_to_free(std::size_t size_bytes) noexcept {
