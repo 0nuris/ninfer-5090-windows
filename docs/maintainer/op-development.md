@@ -446,6 +446,37 @@ Different production routes use different criteria only when their arithmetic or
 profiles differ materially. Widening a criterion requires a numerical reason and requalification
 of its complete affected domain; one failing implementation is not sufficient justification.
 
+### 6.4 Perturbation coverage
+
+A passing test is not evidence that the test can fail. An Op whose wrong answer is well formed rather
+than loud — a selection that returns the wrong `k` entries, a tie broken the wrong way, a sort that
+orders ascending — needs a deliberate perturbation to be distinguishable from a correct one, and a
+control that passes for a structural reason is not a control. `top_k=1` is the standing example: the
+support is a single token, so `p` is a point mass, so `p >= q` holds for every draft and accept-always
+is correct. The multi-token case is where the arithmetic can actually be wrong.
+
+**In-source mutation seams**, for an Op whose fault is silent. The kernel guards its mutation branch
+with `NINFER_OP_TEST_MUTATIONS` and takes a mutation id as an argument; the launcher reads
+`NINFER_OP_MUTATION` once per launch. The define comes from `BUILD_TESTING`, which is OFF in the apps
+tree, so a shipping binary compiles the unmutated code and the branches do not exist in it. The seam is
+`#if`-guarded rather than always-present precisely so that it costs a release build nothing. Cost is one
+test invocation and no rebuild, which is what makes it affordable per run.
+
+**The ratchet**, for a defect that is real but not yet fixed.
+`tools/release/check_production_stream_defaults.py` pins the set of production functions defaulting a
+`cudaStream_t` and fails if that set changes in either direction — growth is a regression, shrinkage is a
+fix landing and needing a deliberate recorded pin update. It never re-baselines itself.
+
+Declarations live in `tests/ops/mutations.json` and `tools/release/check_test_mutation.py` enforces
+them: the suite must be green with no mutation selected, and every declared mutation must turn it red.
+The control run is what makes the mutation assertions mean anything, since a suite that is red to begin
+with satisfies all of them trivially. The gate runs at the tail of `tools/scripts/test_v3.cmd`, not in the
+pre-commit hook, because it reads a build artifact rather than source: a hook would certify whatever
+binary was last built, and with a kernel edited but not rebuilt it reported a false green.
+
+An op with no perturbation coverage should be absent from the manifest, not present and empty; `load()`
+rejects the latter.
+
 ## 7. Performance evidence
 
 An Op microbenchmark measures the public semantic operation at an exact shape, format, layout,

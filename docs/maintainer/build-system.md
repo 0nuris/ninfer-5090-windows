@@ -17,6 +17,14 @@ The default configuration is Release. Ninja links and archives share the single-
 |---|---|---|
 | `NINFER_BUILD_APPS` | ON | CLI, HTTP server and perplexity evaluator |
 | `BUILD_TESTING` | OFF | C++ tests and registered Python interoperability tests |
+
+`BUILD_TESTING` is also the scope of the Op perturbation seam. When it is ON, `ninfer_ops` compiles
+with `NINFER_OP_TEST_MUTATIONS`, which enables mutation branches an Op kernel guards with that define
+and selects at run time from `NINFER_OP_MUTATION`; the launcher reads the variable only in that build.
+The apps tree has `BUILD_TESTING` OFF, so the branches are not compiled into a release binary at all —
+verified by the apps launcher object not containing the string `NINFER_OP_MUTATION`, rather than by
+trusting the option. The seam and the gate that drives it are described in
+[op-development.md](op-development.md#64-perturbation-coverage).
 | `NINFER_BUILD_BENCHMARKS` | OFF | Op, model, Engine and context-cost benchmarks |
 
 Apps or tests enable the internal product support components: media acquisition, prompt input,
