@@ -2,6 +2,13 @@
 
 #include <cuda_runtime.h>
 
+#if defined(_WIN32)
+#    ifndef NOMINMAX
+#        define NOMINMAX
+#    endif
+#    include <windows.h>
+#endif
+
 #include <cstdio>
 #include <limits>
 #include <new>
@@ -50,6 +57,48 @@ void free_pinned(void*& ptr) noexcept {
         ptr = nullptr;
     }
 }
+
+#if defined(_WIN32)
+// Ported from alphastorm/ninfer (omp-ninfer#48): Windows can refuse a pinned allocation for two
+// different reasons, and both were seen on this 31.5 GiB host.
+//
+// 1. Pagefile race (alphastorm v0.6.7, b0e8c2fa). A pin charges its size plus a page-lock
+//    remainder; if free commit covers the size but not the remainder, the pin races the
+//    system-managed pagefile extension and is refused. A user-mode commit waits for the extension,
+//    so committing and releasing size + size/64 first leaves the pin commit it never waits for.
+void extend_commit_limit_for(std::size_t size_bytes) noexcept {
+    const std::size_t precharge = size_bytes + size_bytes / 64;
+    void* region = VirtualAlloc(nullptr, precharge, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (region != nullptr) { VirtualFree(region, 0, MEM_RELEASE); }
+}
+
+// 2. Standby file cache (alphastorm 831e8a57). Pins are served from free pages, not standby, and
+//    loading the 18 GiB artifact fills standby: here a 1 GiB host-KV pin failed with 24 GiB
+//    "free" of which 15.1 GiB was standby, and the same size pinned 20 minutes earlier.
+//    Committing and touching an equal pageable region makes the memory manager repurpose standby
+//    pages; releasing it returns them as free pages the driver can pin. Needs no privilege.
+bool convert_standby_to_free(std::size_t size_bytes) noexcept {
+    void* region = VirtualAlloc(nullptr, size_bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (region == nullptr) { return false; }
+    SYSTEM_INFO info{};
+    GetSystemInfo(&info);
+    auto* bytes = static_cast<volatile unsigned char*>(region);
+    for (std::size_t offset = 0; offset < size_bytes; offset += info.dwPageSize) {
+        bytes[offset] = 1;
+    }
+    VirtualFree(region, 0, MEM_RELEASE);
+    return true;
+}
+
+std::string commit_state() {
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    if (!GlobalMemoryStatusEx(&status)) { return {}; }
+    return "; commit available " + std::to_string(status.ullAvailPageFile >> 20) + " of " +
+           std::to_string(status.ullTotalPageFile >> 20) + " MiB, physical available " +
+           std::to_string(status.ullAvailPhys >> 20) + " MiB";
+}
+#endif
 
 } // namespace
 
@@ -244,10 +293,29 @@ void DeviceArena::reset_peak() noexcept { peak_ = off_; }
 PinnedHostBuffer::PinnedHostBuffer(std::size_t size_bytes) {
     if (size_bytes == 0) { throw std::invalid_argument("PinnedHostBuffer size must be nonzero"); }
 
-    void* ptr             = nullptr;
-    const cudaError_t err = cudaMallocHost(&ptr, size_bytes);
+    void* ptr = nullptr;
+#if defined(_WIN32)
+    extend_commit_limit_for(size_bytes);
+#endif
+    cudaError_t err = cudaMallocHost(&ptr, size_bytes);
+#if defined(_WIN32)
+    if (err == cudaErrorMemoryAllocation) {
+        (void)cudaGetLastError();
+        if (convert_standby_to_free(size_bytes)) {
+            std::fprintf(stderr,
+                         "cudaMallocHost refused %zu bytes; retrying after converting standby "
+                         "memory to free pages\n",
+                         size_bytes);
+            err = cudaMallocHost(&ptr, size_bytes);
+        }
+    }
+#endif
     if (err != cudaSuccess) {
-        throw std::runtime_error(cuda_error_message("cudaMallocHost failed", err));
+        std::string message = cuda_error_message("cudaMallocHost failed", err);
+#if defined(_WIN32)
+        message += commit_state();
+#endif
+        throw std::runtime_error(message);
     }
 
     data_ = ptr;

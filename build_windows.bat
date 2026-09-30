@@ -9,11 +9,14 @@ REM is tried first with `latest` as the fallback -- this pin went stale once alr
 set "FFMPEG_ASSET=ffmpeg-master-latest-win64-lgpl-shared.zip"
 set "FFMPEG_PIN=autobuild-2026-09-20-13-11"
 if not exist ffmpeg (
-    echo [1/4] Downloading FFmpeg Windows dev binaries (LGPL shared)...
+    echo [1/4] Downloading FFmpeg Windows dev binaries ^(LGPL shared^)...
     powershell -Command "try { Invoke-WebRequest -Uri 'https://github.com/BtbN/FFmpeg-Builds/releases/download/%FFMPEG_PIN%/%FFMPEG_ASSET%' -OutFile 'ffmpeg.zip' } catch { Write-Host 'Pinned autobuild is gone; falling back to the latest release.'; Invoke-WebRequest -Uri 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/%FFMPEG_ASSET%' -OutFile 'ffmpeg.zip' }"
     
     echo [2/4] Extracting FFmpeg...
-    powershell -Command "Expand-Archive -Path 'ffmpeg.zip' -DestinationPath 'ffmpeg_temp' -Force"
+    REM tar, not Expand-Archive: launched from pwsh 7, Windows PowerShell 5.1 inherits a
+    REM PSModulePath it cannot load Microsoft.PowerShell.Archive from.
+    mkdir ffmpeg_temp
+    tar -xf ffmpeg.zip -C ffmpeg_temp
     
     echo Moving files into place...
     move ffmpeg_temp\ffmpeg-master-latest-win64-lgpl-shared ffmpeg >nul
