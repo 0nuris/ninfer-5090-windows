@@ -7,7 +7,8 @@
 > Windows refusing the engine's pinned host cache, and a Windows install/launch/watchdog kit.
 > Start with **[deploy/windows/README.md](deploy/windows/README.md)**, or download the release zip.
 > At `--max-context` 262,144 or less the engine is byte-identical to upstream, so everything
-> below still applies. Changes are listed at the end of [NOTICE](NOTICE).
+> below still applies. Changes are listed at the end of [NOTICE](NOTICE). Fork releases use
+> their own semantic versions starting at `v1.0.0` (based on this repository's `v1.1.0`).
 
 This repository is the native Windows port of [Neroued/ninfer](https://github.com/Neroued/ninfer):
 the same C++/CUDA engine, built with MSVC and CUDA 13.3 on Windows 11 x64, with no WSL2 and no

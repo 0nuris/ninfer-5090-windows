@@ -133,3 +133,13 @@ cache and ran about 2× slower than one at a time. Default: 1.
 Build with the repository's `build_windows.bat` (CUDA 13.3, Visual Studio 2022 Build Tools or
 2026 with the C++ workload), then point `Exe` in `ninfer.config.ps1` at `build\apps\ninfer-serve.exe`,
 or assemble a release with `deploy\windows\stage-release.ps1 -Build <build dir> -Version <tag>`.
+
+## Versioning
+
+Releases of this fork use their own [Semantic Versioning](https://semver.org/), starting at
+`v1.0.0`: patch releases (`v1.0.1`) fix bugs or documentation, minor releases (`v1.1.0`) add
+backward-compatible features, and major releases (`v2.0.0`) change how the kit is installed,
+configured or run in a way that needs action from you. The engine version each release is built on
+is stated in its release notes; `v1.0.0` is based on
+[headpiece747/ninfer-5090-windows](https://github.com/headpiece747/ninfer-5090-windows) `v1.1.0`.
+The earlier `v1.1.0-512k.1` to `.4` tags predate this scheme and are marked as pre-releases.

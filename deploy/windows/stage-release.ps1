@@ -1,5 +1,6 @@
 # Maintainer tool: assemble the release zip from a source build.
-#   stage-release.ps1 -Build C:\src\ninfer\build -Version v1.1.0-512k.1
+#   stage-release.ps1 -Build C:\src\ninfer\build -Version v1.0.0
+# Versions are this fork's own Semantic Versioning (see README.md, "Versioning").
 # Produces dist\ninfer-512k-<Version>-win64-rtx5090.zip containing bin\ (engine + FFmpeg DLLs),
 # the deploy scripts, docs, licenses and SHA256SUMS. The model is never packaged.
 param(
