@@ -294,6 +294,13 @@ registration sites under `tests/` and differencing that set against `HEAD` — d
 numbers alone is what produced two wrong counts in this file before, and a first pass that scanned two
 files and one macro found the net as zero and missed both additions.
 
+**The 135 above is this merge's figure and it was correct on the day. The suite is now 136** — the
+`topk_logprobs` Op and its test landed 2026-09-29, after this was written. `tools/release/test_baseline.json`
+is the authority and records 136, so a reader comparing this file against the baseline should expect the
+difference rather than treat either as wrong. Annotated rather than edited in place: a dated record of
+what a merge produced should not be rewritten to match a later state. The count-derivation method above
+is the part worth reusing, and it still holds.
+
 **Not established:** why the FP8 TMA kernel faults. It may be an sm_120a limitation or a defect in
 upstream's kernel, and telling upstream it faults on a consumer Blackwell target is worth doing either
 way.
@@ -407,6 +414,38 @@ work -- it was an unhandled exception reaching `std::terminate`, not a `noexcept
 prints the engine's own `missing component dflash`.
 
 ---
+
+### 14. A lane's first request returns different, shorter text — a serving behaviour, undiagnosed
+**Promoted out of item 6, where it was recorded under a DONE heading and therefore invisible to anyone
+reading the list.** That is the only reason it moved; the content is item 6's, unchanged.
+
+**What is observed.** After a server start, a client's *first* full-length request returns faster than
+every later identical request and returns **different, shorter text** from the same seed. Requests 2..n
+are byte-identical to each other. On the lane where item 6 caught it, that first request read 261.7 tok/s
+against 169.8 for requests 2-7. It is **invisible at temperature 0** — the greedy digest is stable from
+request 1 — and visible at the sampling temperature the bench uses.
+
+**Why item 6's fix did not and could not address it.** The bench now discards one full-length warmup, and
+skips it in `parse_spec_jsonl` because the engine appends to its request log for the whole session. That
+is a correct fix for the *measurement*. It is explicitly not a fix for the behaviour: a real client still
+gets different, shorter first-turn text. Fixing the harness and fixing the engine are two different jobs
+and only the first has been done.
+
+**Not established, and the question is not yet even shaped.** Whether this is a sampler or RNG
+initialisation that is not yet warmed, a speculative-decode path that behaves differently on an empty
+prefix, an adapter or template state materialised lazily on first use, or a cache/prefix-population
+effect. Item 6 established that it is *real* and *not* a measurement artefact. It did not establish where
+it comes from.
+
+**Why it is worth an item despite looking small.** It is user-visible and it is deterministic: the same
+seed gives different text on the first turn and stable text afterwards. A client that treats turn one as
+representative — an eval harness, a regression test, anything comparing a first response to a reference
+— is comparing against a different sample. It also means the bench's own warmup discard is load-bearing
+in a way that is easy to remove as "redundant" by a later reader.
+
+**Done when:** the cause is identified, and either the first request is brought to parity with the rest
+or the divergence is characterised precisely enough to state it as intended behaviour. Either answer is
+acceptable; leaving it undocumented is not, because the bench currently compensates for it silently.
 
 ## Closed — do not reopen
 
