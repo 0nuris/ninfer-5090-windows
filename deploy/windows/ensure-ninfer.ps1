@@ -1,6 +1,7 @@
-# Watchdog run by the NInferServer scheduled task every 5 minutes (and at boot). Does nothing
-# while the server answers /health; otherwise runs start-ninfer.ps1, so the server returns
-# after a reboot or crash. Each action is noted in logs\watchdog.log.
+# Optional watchdog for running the server unattended. Does nothing while the server answers
+# /health; otherwise runs start-ninfer.ps1. Run it periodically from whatever you use to keep
+# things running (Task Scheduler, a service wrapper, ...); how and as whom is up to you. Each
+# action is noted in logs\watchdog.log. Exit code 0 = healthy or started, 1 = start failed.
 #
 # To use the GPU for something else, create a file named ninfer.disabled next to this script
 # before stopping the server; delete it to let the watchdog start NInfer again.

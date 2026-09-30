@@ -34,16 +34,26 @@ and a fix that lets Windows pin the engine's host cache reliably.
    It waits for `/health` and prints `READY` (about 15 s after the first start). Stop it by
    ending `ninfer-serve.exe` (Task Manager, or `Stop-Process -Name ninfer-serve`).
 
-### Optional system integration
+### Running it unattended (your setup)
 
-None of these are needed to run the server. Each changes system settings, so run
-`install.ps1` with it from an **elevated** PowerShell:
+The kit does not install services, scheduled tasks or firewall rules; how the server runs on
+your system is your choice. What it provides:
 
-| Switch | Effect |
-|---|---|
-| `-BlockOutbound` | Windows Firewall rules blocking the engine's outbound connections. It never needs them for text; only image/video URLs in requests would be fetched. |
-| `-AllowFrom <range>` | Inbound firewall rule for the port, to serve other devices (see *Serving other devices*). |
-| `-RegisterTask` | Scheduled task that runs `ensure-ninfer.ps1` at boot and every 5 minutes, whether or not anyone is signed in, restarting the server after a reboot or crash. Runs as you without storing a password (S4U). Add `-TaskUser <account>` to run it as another account, or `-StorePassword` if your environment refuses S4U tasks; both ask for that account's password. |
+- `start-ninfer.ps1` starts the server and exits 0 once `/health` answers (1 on failure).
+- `ensure-ninfer.ps1` is a watchdog: it does nothing while the server is healthy and runs
+  `start-ninfer.ps1` otherwise, logging to `logs\watchdog.log`. Run it every few minutes from any
+  scheduler or service manager to start the server at boot and restart it after a crash. A
+  `ninfer.disabled` file next to the scripts pauses it.
+
+Things to know when you set that up: the server needs no administrator rights; it pins host
+memory, which counts against the running account's limits like any process; and a task that runs
+while nobody is signed in needs a sign-in method your environment allows (for Windows Task
+Scheduler that is a stored password or an S4U task, and the account needs *Log on as a batch job*
+if it is not an administrator).
+
+**Firewall.** For text use the engine never opens outbound connections (only image/video URLs in
+requests would be fetched), so blocking its outbound traffic costs nothing if you want that.
+Serving other devices needs an inbound rule for `Port` (see *Serving other devices*).
 
 ## Use it
 
@@ -60,10 +70,9 @@ than text, non-empty `include`, `n > 1`, ...) are refused with a named error ins
 See the upstream README's "Client compatibility" section.
 
 **Serving other devices.** Set `BindAddress` in `ninfer.config.ps1` to this PC's LAN or VPN
-(e.g. Tailscale) address. Windows Firewall normally blocks inbound connections to it, so either
-allow them your own way or run `install.ps1 -AllowFrom 192.168.1.0/24` (or `100.64.0.0/10` for
-Tailscale) from an elevated PowerShell. There is no authentication, so anything that can reach
-the port can use the model.
+(e.g. Tailscale) address, and allow inbound TCP to `Port` in your firewall, ideally only from the
+range that should reach it. There is no authentication, so anything that can reach the port can
+use the model.
 
 ## What to expect
 
@@ -99,8 +108,8 @@ cache and ran about 2× slower than one at a time. Default: 1.
 - Logs: `logs\ninfer.err` (per-request speed, cache hits, errors). Each start keeps the previous
   log as `ninfer-<timestamp>.err`; the newest 20 are kept.
 - Watch live: `Get-Content logs\ninfer.err -Wait -Tail 0 | Select-String 'req#\d+ done|WARN|ERROR'`
-- With `-RegisterTask`: the watchdog writes `logs\watchdog.log`. To pause it (to use the GPU
-  for something else), create an empty `ninfer.disabled` file next to the scripts, then stop
+- If you run the watchdog: it writes `logs\watchdog.log`. To pause it (to use the GPU for
+  something else), create an empty `ninfer.disabled` file next to the scripts, then stop
   `ninfer-serve`. Delete the file to hand the GPU back.
 - Optional hardening: in NVIDIA Control Panel, set *CUDA - Sysmem Fallback Policy* to
   *Prefer No Sysmem Fallback* for `ninfer-serve.exe`, so running out of VRAM fails loudly instead
@@ -116,8 +125,6 @@ cache and ran about 2× slower than one at a time. Default: 1.
 | `ABORT: port 8088 is in use by <program>` | Another program listens on the port; the script never stops it. Stop it or change `Port`. |
 | Process exits immediately, `0xC0000135` | A DLL is missing: keep `bin\` intact, and install the VC++ runtime. |
 | HTTP 400 `context length exceeded` | Prompt plus `max_tokens` is above `MaxContext`. |
-| Scheduled task result `0x8007052E` | With a stored password (`-TaskUser`/`-StorePassword`): the password changed. Re-run `install.ps1 -RegisterTask` with the same options. |
-| `-RegisterTask` fails with access denied | The environment refuses S4U tasks: add `-StorePassword`. A non-administrator task account also needs the *Log on as a batch job* right (`secpol.msc`). |
 
 ## Building from source
 

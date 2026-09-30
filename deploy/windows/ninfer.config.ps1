@@ -9,8 +9,8 @@ $NInferConfig = @{
     Logs        = "logs"
     KeepLogs    = 20            # rotated ninfer-<timestamp>.err/.out files to keep
 
-    # Network. 127.0.0.1 serves this PC only. To serve other devices, set this PC's LAN or
-    # Tailscale address and run install.ps1 -AllowFrom <remote range> for the inbound rule.
+    # Network. 127.0.0.1 serves this PC only. To serve other devices, set this PC's LAN or VPN
+    # address and allow inbound connections to Port in your firewall (see README.md).
     # There is no API key; anything that can reach the port can use the model.
     BindAddress = "127.0.0.1"
     Port        = 8088
