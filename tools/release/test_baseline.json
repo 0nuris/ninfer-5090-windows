@@ -1,6 +1,6 @@
 {
-  "recorded": "2026-09-27",
-  "suite_size": 135,
+  "recorded": "2026-09-29",
+  "suite_size": 136,
   "known_failures": {
     "ninfer_qwen3_5_dflash_real_test": {
       "case": "dflash real route",
