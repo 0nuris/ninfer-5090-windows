@@ -136,3 +136,25 @@ def test_an_op_entry_that_is_not_an_object_is_rejected(tmp_path: Path, valid: di
     valid["ops"]["synthetic"] = ["not", "an", "object"]  # type: ignore[assignment]
     with pytest.raises(gate.ManifestError, match="must be an object"):
         gate.load(write(tmp_path, valid))
+
+
+@pytest.mark.parametrize(
+    ("output", "pending"),
+    [
+        ("[1/4] Building CUDA object src/ops/foo.cu.obj", True),
+        ("[1/4] a\n[2/4] b\n[3/4] c\n[4/4] d\n", True),
+        ("ninja: no work to do.", False),
+        ("", False),
+        # The word "build" must not be mistaken for a pending step. This is why the check is
+        # structural: a prose match on "build" would report this tree as dirty when it is current.
+        ("Build files have been written to: C:/AI/ninfer-v3-windows/build-test", False),
+        ("[FAILED] Building CUDA object", False),
+    ],
+)
+def test_pending_build_steps_are_detected_structurally(output: str, pending: bool) -> None:
+    """A dry run exits 0 whether or not there is work, so the step lines are the only signal.
+
+    The negative cases matter more than the positive one: a guard that matched the word "build"
+    would fail every current tree, and one that matched "[FAILED]" would report a failure as pending.
+    """
+    assert bool(gate.NINJA_STEP.findall(output)) is pending

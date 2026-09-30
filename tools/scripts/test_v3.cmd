@@ -44,3 +44,16 @@ REM order changes nothing about the verdict.
 echo === CTEST ===
 ctest --test-dir build-test --output-on-failure --schedule-random
 echo CTEST_EXIT=%ERRORLEVEL%
+REM === OP PERTURBATION ===
+REM Last, and separate from the suite, because it asks a different question: not "do the tests pass"
+REM but "can they". Each declared mutation must turn its suite red. It was in .githooks/pre-commit and
+REM was removed from there -- a hook that reads build-test\ certifies whatever binary was last built,
+REM and with a kernel edited but not rebuilt it reported PASS. Here the build above is minutes old at
+REM worst, and the gate verifies that for itself with a build dry run rather than assuming it, so the
+REM verdict describes this tree rather than whatever happened to be lying around. It cannot build
+REM here itself: nvcc needs cl.exe, which needs the Visual Studio environment a Python process does
+REM not carry. Costs about a second per mutation, plus one no-op dry run.
+set "PY=%NINFER_PYTHON%"
+if "%PY%"=="" set "PY=C:/vllm-env/Scripts/python.exe"
+"%PY%" tools\release\check_test_mutation.py
+echo MUTATION_EXIT=%ERRORLEVEL%

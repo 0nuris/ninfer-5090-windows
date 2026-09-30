@@ -1,24 +1,24 @@
 #!/bin/sh
-# Run the release gates that are fast enough for every commit.
-#
-# Five checks, all seconds: documentation links resolve, the profile tables match the profile module
+# Four checks, all seconds: documentation links resolve, the profile tables match the profile module
 # and the generated launchers, the calibration corpus is still the one the artifact's creator used,
-# every declared Op perturbation still turns its suite red, and the converter tests pass. Each has
-# caught a real drift in this repository -- a README quoting a digest the pins had moved past, a
-# suite size that had drifted from the baseline, a recipe defect, a block scale that one of its
-# three carriers had moved without the others, a selection test that had stopped being able to fail
-# -- and before this hook existed, nothing ran them automatically.
+# and the converter tests pass. Each has caught a real drift in this repository -- a README quoting a
+# digest the pins had moved past, a suite size that had drifted from the baseline, a recipe defect, a
+# block scale that one of its three carriers had moved without the others -- and before this hook
+# existed, nothing ran them automatically.
 #
 # Deliberately not here: the C++ suite (minutes, and it needs the GPU), the baseline gate (it runs
-# ctest), and compute-sanitizer (much slower again). Those belong at a push or in CI, which is why
-# tools/scripts/test_v3.cmd and tools/scripts/test_v3_compute_sanitizer.cmd exist.
+# ctest), compute-sanitizer (much slower again), and the Op perturbation gate. Those belong at a
+# push or in CI, which is why tools/scripts/test_v3.cmd and tools/scripts/test_v3_compute_sanitizer.cmd
+# exist.
 #
-# The perturbation gate is the one exception, deliberately. It does run ctest -- one Op test at a
-# time, about a second each, which is the only reason it is affordable here at all. The cost is that
-# it needs a built build-test and a free GPU, so committing without building fails this hook with the
-# remedy spelled out in the message, rather than skipping quietly. "I could not check this" and
-# "this is correct" are different claims and only one of them is worth committing on. --no-verify
-# skips it.
+# The perturbation gate was in this hook once and was removed deliberately, because it reads a build
+# artifact rather than source. Every check here reads tracked files, so it is current by
+# construction; that one ran ctest against whatever binary happened to be in build-test, and with the
+# kernel edited but not rebuilt it reported PASS -- a false green, which is worse than no check,
+# since it turns an untested commit into an apparently tested one. It now builds what it perturbs
+# and runs at the tail of test_v3.cmd, where "freshly built" is a precondition rather than a hope.
+# What survives here is the manifest half: 19 tests that validate the declarations with no build and
+# no GPU, which is the drift most likely to happen and the hardest to notice.
 #
 # Enable with: git config core.hooksPath .githooks
 # Skip once with: git commit --no-verify
@@ -59,7 +59,6 @@ gate() {
 gate "documentation links" "$PY" tools/release/check_doc_links.py
 gate "profile consistency" "$PY" tools/release/check_profile_consistency.py
 gate "calibration corpus" "$PY" tools/release/check_calibration_corpus.py
-gate "Op perturbation" "$PY" tools/release/check_test_mutation.py
 echo "pre-commit: converter tests"
 # The doc-link test is named explicitly: tests/release also holds a ctest script that exits at import,
 # so collecting the directory would abort the run instead of adding to it. The calibration-corpus and

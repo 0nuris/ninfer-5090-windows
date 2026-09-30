@@ -129,6 +129,78 @@ def load(path: Path) -> dict[str, Op]:
     return ops
 
 
+# ninja's status prefix. Matched structurally because the dry run exits 0 whether or not there is work,
+# so there is no exit code to branch on. A step line is not prose: "[3/4] Linking ..." is a fixed
+# format, unlike a message that merely contains the word "build".
+NINJA_STEP = re.compile(r"^\[\d+/\d+\]", re.MULTILINE)
+
+# ctest's inventory line, from `ctest -N`. `ctest -N` exits 0 for a match and for no match alike, and
+# prints "Total Tests: 0" either way, so the per-test lines are the structural signal.
+CTEST_TEST_LINE = re.compile(r"^\s*Test\s+#\d+:", re.MULTILINE)
+
+
+def test_is_registered(test: str) -> bool:
+    """Whether ctest knows a test by this name, checked without running it.
+
+    This is asked before the freshness check, not after, and the order is the point. The freshness
+    check dry-runs a build for the named target, and a name that does not exist has no target -- so
+    asking currency first reported a dry-run failure for what is actually a typo in the manifest,
+    sending the reader after the build instead of the manifest.
+    """
+    environment = dict(os.environ)
+    environment["PATH"] = str(CTEST.parent) + os.pathsep + environment.get("PATH", "")
+    completed = subprocess.run(
+        [str(CTEST), "--test-dir", "build-test", "-N", "-R", f"^{re.escape(test)}$"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return bool(CTEST_TEST_LINE.search(completed.stdout + completed.stderr))
+
+
+def targets_are_current(targets: list[str]) -> tuple[bool, str]:
+    """Report whether the tests this gate is about to perturb are already built from this source.
+
+    This is the whole reason the gate can be trusted wherever it runs. Verified by demonstration,
+    not assumed: with the kernel source edited and deliberately left unbuilt, an earlier version of
+    this gate reported GATE PASSED -- a false green, because it was certifying the previous build. A
+    gate that can certify code it never compiled is worse than no gate, since it converts an untested
+    commit into an apparently tested one.
+
+    It *verifies* rather than *builds*, deliberately. Building here was tried and does not work: nvcc
+    needs cl.exe, which means the Visual Studio environment, which a Python gate cannot assume it
+    has. The gate reached that failure and reported it, so it was safe -- but a gate that silently
+    depends on an ambient environment is one that will be run in the wrong shell eventually.
+
+    So the contract is: the tree must already be built, and this proves it rather than assuming it.
+    A stale tree is a failure with the remedy named, which is a different claim from "this is
+    correct" and the only one worth committing on. At the tail of test_v3.cmd the build has just
+    happened, so this costs one no-op dry run.
+    """
+    environment = dict(os.environ)
+    environment["PATH"] = str(CTEST.parent) + os.pathsep + environment.get("PATH", "")
+    completed = subprocess.run(
+        [str(CTEST.parent / "cmake.exe"), "--build", "build-test", "--target", *targets, "--", "-n"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        tail = " | ".join(line.strip() for line in completed.stdout.splitlines() if line.strip())[-300:]
+        return False, f"the dry run failed (exit {completed.returncode}): {tail}"
+
+    output = completed.stdout + completed.stderr
+    steps = NINJA_STEP.findall(output)
+    if steps:
+        return False, (
+            f"{len(steps)} build step(s) are pending for {', '.join(targets)}, so the binary under "
+            "test is older than the source being checked"
+        )
+    return True, f"{', '.join(targets)} is built from the current source"
+
+
 def run_once(test: str, env_value: str | None) -> tuple[bool, str, float]:
     """Run one test through ctest exactly as the release gate invokes it.
 
@@ -249,10 +321,40 @@ def main() -> int:
             "GATE FAILED: build-test does not exist, so there is no test to perturb. Build it "
             "first:\n"
             "  tools/scripts/test_v3.cmd\n"
-            "A perturbation gate needs a built tree; it cannot prove anything from source alone.",
+            "A perturbation gate needs a test tree; it cannot prove anything from source alone.",
             file=sys.stderr,
         )
         return 1
+
+    # Existence first, then currency. See test_is_registered: a name ctest does not know has no
+    # build target, so checking currency ahead of this reports a dry-run failure for what is really a
+    # typo in the manifest.
+    unknown = [op.test for op in ops.values() if not test_is_registered(op.test)]
+    if unknown:
+        print(
+            f"GATE FAILED: ctest found no test named {', '.join(repr(t) for t in unknown)}.\n"
+            "  Either the manifest names it wrongly, or the tree was not configured with\n"
+            "  BUILD_TESTING=ON. Note that ctest exits 0 when its regex selects nothing, so this\n"
+            "  would otherwise be misreported as a mutation that did not take effect.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Prove the tree under test is the tree being checked. See targets_are_current: an earlier version
+    # certified a stale binary and reported PASS.
+    targets = sorted({op.test for op in ops.values()})
+    current, currency_note = targets_are_current(targets)
+    if not current:
+        print(
+            f"GATE FAILED: {currency_note}.\n"
+            "  A perturbation gate must not certify a binary it did not compile, so this is a failure\n"
+            "  rather than a run against the stale one. Build the tree, then re-run:\n"
+            "    tools/scripts/test_v3.cmd\n"
+            "  Or let test_v3.cmd do both, which is where this gate is meant to be reached from.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"tree is current: {currency_note}")
 
     print(f"running {sum(len(op.mutations) for op in ops.values())} perturbation assertions "
           f"across {len(ops)} op(s)")
