@@ -103,9 +103,12 @@ void configure_http_server_socket(socket_t socket) noexcept {
     set_socket_option(socket, IPPROTO_TCP, TCP_KEEPCNT, kKeepAliveProbeCount);
     set_socket_option(socket, IPPROTO_TCP, TCP_USER_TIMEOUT, kTcpUserTimeoutMilliseconds);
 #elif defined(_WIN32)
+    // SO_EXCLUSIVEADDRUSE prevents another process from hijacking the port via SO_REUSEADDR.
+    // Microsoft's Winsock guidance: "All server applications must set SO_EXCLUSIVEADDRUSE."
+    const BOOL enabled = TRUE;
+    set_socket_option(socket, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, enabled);
     // A half-open connection otherwise holds a request slot until the client's own timeout fires.
     // TCP_KEEPIDLE/TCP_KEEPINTVL/TCP_KEEPCNT are only defined by newer SDKs, so each is guarded.
-    const BOOL enabled = TRUE;
     set_socket_option(socket, SOL_SOCKET, SO_KEEPALIVE, enabled);
 #    if defined(TCP_KEEPIDLE)
     set_socket_option(socket, IPPROTO_TCP, TCP_KEEPIDLE, kKeepAliveIdleSeconds);

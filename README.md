@@ -106,6 +106,19 @@ cmake --build build --config Release -j
 
 producing `build/apps/ninfer-serve.exe`.
 
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Clean shutdown (SIGINT/SIGTERM) |
+| `1` | Configuration, bind, warmup, or listen error |
+| `3` | Engine-wide failure — restart required |
+
+Exit code `3` is distinct from `1` so a supervisor can tell "engine fault, restart required" from
+"bad configuration, do not retry". The engine latches failure permanently (`fail_all_locked` sets
+`failed_` once and nothing clears it), so the serve loop checks `is_available()` after `listen()`
+returns and exits with code `3` if the engine has failed.
+
 Two build notes specific to Windows:
 
 - FFmpeg is located through the local `ffmpeg/` tree instead of `pkg-config`, and is exposed
@@ -117,8 +130,8 @@ Two build notes specific to Windows:
 
 ### Runtime notes
 
-- Artifact I/O uses Win32 memory-mapped and unbuffered positional reads
-  (`CreateFileW` with `FILE_FLAG_NO_BUFFERING`), the counterpart of POSIX `O_DIRECT`/`pread`.
+- Artifact I/O uses Win32 unbuffered positional reads
+  (`CreateFileW` with `FILE_FLAG_NO_BUFFERING` and `OVERLAPPED`), the counterpart of POSIX `O_DIRECT`/`pread`.
 - The Blackwell NVFP4 TMA kernels pass their descriptor block by **device pointer**, because
   MSVC cannot pass an `alignas(128)` struct by value as a kernel parameter (`C2719`).
 - MSVC has no `__int128`; the runtime contract's 128-bit cost arithmetic goes through

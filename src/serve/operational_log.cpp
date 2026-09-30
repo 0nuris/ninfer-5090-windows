@@ -555,4 +555,8 @@ void OperationalLog::server_failure(bool serving, std::string_view detail) const
                       product::format_pretty_text(detail));
 }
 
+void OperationalLog::engine_failure() const {
+    logger_->critical("engine failed | exiting with code 3 (restart required)");
+}
+
 } // namespace ninfer::serve

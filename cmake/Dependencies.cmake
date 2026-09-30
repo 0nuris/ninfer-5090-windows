@@ -27,9 +27,10 @@ add_subdirectory(third_party/llama-jinja EXCLUDE_FROM_ALL)
 if(NINFER_BUILD_PRODUCT_SUPPORT)
   # Media acquisition uses CURLOPT_PROTOCOLS_STR and CURLOPT_REDIR_PROTOCOLS_STR,
   # introduced in libcurl 7.85 (not merely the version of the maintainer environment).
-  if(NOT MSVC)
-    pkg_check_modules(LIBCURL REQUIRED IMPORTED_TARGET libcurl>=7.85)
-  endif()
+  # Use CMake's FindCURL module, which works on both Linux and Windows and creates
+  # the CURL::libcurl imported target. CURL is optional: when absent, remote HTTP media
+  # is unsupported at runtime (the existing NINFER_HAVE_LIBCURL guard handles this).
+  find_package(CURL 7.85)
   add_library(ninfer::httplib INTERFACE IMPORTED GLOBAL)
   target_include_directories(ninfer::httplib INTERFACE
     ${PROJECT_SOURCE_DIR}/third_party/cpp-httplib)

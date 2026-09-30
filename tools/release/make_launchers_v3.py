@@ -46,6 +46,14 @@ REM  interleaved Serve processes per condition: spin costs 0.18-0.31 of a core a
 REM  measurable latency, TTFT 1.3-1.9 ms apart against 3.0-15.5 ms spreads, idle and with half
 REM  the machine's logical processors held busy by host work. The engine's default is untouched;
 REM  docs/research/prompt-preparation-cost.md carries the measurement and its limits.
+REM
+REM  TDR (Timeout Detection and Recovery): the RTX 5090 is a GeForce, so it runs WDDM with a
+REM  2-second TDR budget. No single GPU operation in any measured profile approaches this
+REM  (prefill is chunked, decode uses CUDA graphs with a handful of tokens per round, weight
+REM  upload is DMA). If a future profile ever contains a launch that could exceed 2 s, set
+REM  TdrDelay in the registry (HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers) to
+REM  raise the threshold. A TDR surfaces as a CUDA error and the engine's fail-stop latch
+REM  terminates the process rather than continuing with a lost device.
 REM ============================================================================
 setlocal
 

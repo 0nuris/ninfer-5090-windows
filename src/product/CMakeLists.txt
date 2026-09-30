@@ -2,13 +2,11 @@ add_library(ninfer_media_acquire STATIC
   media_acquire/acquire.cpp
 )
 ninfer_internal_includes(ninfer_media_acquire)
-if(TARGET PkgConfig::LIBCURL)
-  target_link_libraries(ninfer_media_acquire PRIVATE PkgConfig::LIBCURL)
+if(TARGET CURL::libcurl)
+  target_link_libraries(ninfer_media_acquire PRIVATE CURL::libcurl)
   target_compile_definitions(ninfer_media_acquire PRIVATE NINFER_HAVE_LIBCURL=1)
 endif()
-if(WIN32)
-  target_link_libraries(ninfer_media_acquire PRIVATE ws2_32)
-endif()
+
 
 add_library(ninfer_product_prompt_input STATIC
   prompt_input/prompt_input.cpp
