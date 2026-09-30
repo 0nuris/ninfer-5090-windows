@@ -27,8 +27,17 @@ ldd "$STAGE/bin/ninfer-serve" | awk '/libcudart\.so/ { print $3 }' | while read 
     [ -n "$lib" ] || continue
     cp -L "$lib" "$STAGE/bin/$(basename "$lib")"
 done
-cuda_eula="$(ls /usr/local/cuda/EULA.txt 2>/dev/null || true)"
-[ -n "$cuda_eula" ] && cp "$cuda_eula" "$STAGE/licenses/NVIDIA-CUDA-EULA.txt"
+# The CUDA EULA must travel with the bundled runtime. It comes from the toolkit's documentation
+# package (cuda-documentation-<ver>); refuse to package without it rather than ship silently.
+if ls "$STAGE"/bin/libcudart.so* >/dev/null 2>&1; then
+    cuda_eula="$(find /usr/local/cuda /usr/local/cuda-* /usr/share/doc -maxdepth 4 -iname 'EULA.txt' 2>/dev/null | head -n1)"
+    if [ -z "$cuda_eula" ]; then
+        echo "CUDA EULA.txt not found (install cuda-documentation-<version>); it must ship with libcudart" >&2
+        exit 1
+    fi
+    cp "$cuda_eula" "$STAGE/licenses/NVIDIA-CUDA-EULA.txt"
+    echo "bundled CUDA EULA from $cuda_eula"
+fi
 
 for f in ninfer.conf start-ninfer.sh ensure-ninfer.sh install.sh README.md THIRD_PARTY_NOTICES.md; do
     cp "$HERE/$f" "$STAGE/"

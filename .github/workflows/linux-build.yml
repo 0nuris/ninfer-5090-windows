@@ -35,7 +35,10 @@ jobs:
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
             git ca-certificates cmake ninja-build pkg-config file \
-            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libcurl4-openssl-dev
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libcurl4-openssl-dev \
+            cuda-documentation-13-3
+          # The CUDA EULA ships with the bundled libcudart (see deploy/linux/stage-release.sh).
+          find /usr/local/cuda /usr/local/cuda-* /usr/share/doc -maxdepth 4 -iname 'EULA.txt' 2>/dev/null
 
       - uses: actions/checkout@v4
 
