@@ -2,3 +2,6 @@
 # default whitespace checks.
 /third_party/spdlog/include/** -whitespace
 /third_party/spdlog/src/** -whitespace
+# Shell scripts and their config must keep LF endings (they are edited on Windows).
+*.sh text eol=lf
+deploy/linux/ninfer.conf text eol=lf

@@ -1,0 +1,83 @@
+# Builds the Linux release tarball on Ubuntu 24.04 with CUDA 13.3. Compiling needs no GPU, so a
+# standard runner is enough (free for public repositories); the result is not run here.
+#
+# - Actions tab -> "linux-build" -> Run workflow: builds a tarball as a workflow artifact, and
+#   attaches it to an existing release if release_tag is given.
+# - Publishing a GitHub release builds and attaches the tarball to that release automatically.
+name: linux-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version label for the tarball name (e.g. v1.1.0)
+        required: true
+      release_tag:
+        description: Existing release tag to attach the tarball to (leave empty for artifact only)
+        required: false
+        default: ""
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container: nvidia/cuda:13.3.1-devel-ubuntu24.04
+    env:
+      VERSION: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.version }}
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+            git ca-certificates cmake ninja-build pkg-config file \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libcurl4-openssl-dev
+
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES=120a \
+            -DNINFER_BUILD_APPS=ON -DBUILD_TESTING=OFF -DNINFER_BUILD_BENCHMARKS=OFF \
+            '-DCMAKE_BUILD_RPATH=$ORIGIN'
+
+      # 4 vCPU / 16 GB runners: 3 parallel jobs keeps nvcc's peak memory within bounds.
+      - name: Build
+        run: cmake --build build --parallel 3 --target ninfer-serve ninfer-perplexity
+
+      # The binaries cannot run here (no NVIDIA driver in the container); check linkage instead.
+      - name: Inspect
+        run: |
+          file build/apps/ninfer-serve
+          ldd build/apps/ninfer-serve || true
+          readelf -d build/apps/ninfer-serve | grep -E 'RPATH|RUNPATH|NEEDED' || true
+
+      - name: Package
+        run: bash deploy/linux/stage-release.sh build "$VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-tarball
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  attach:
+    needs: build
+    if: github.event_name == 'release' || inputs.release_tag != ''
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-tarball
+          path: dist
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
+        run: gh release upload "$TAG" dist/*.tar.gz --clobber --repo "$GITHUB_REPOSITORY"

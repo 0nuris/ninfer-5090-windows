@@ -5,7 +5,8 @@
 > **This fork: 524K context.** Adds YaRN context extension (Qwen3.8-27B to **524,288 tokens** on
 > one RTX 5090, validated by full-context retrieval, perplexity and GSM8K checks), a fix for
 > Windows refusing the engine's pinned host cache, and a Windows install/launch/watchdog kit.
-> Start with **[deploy/windows/README.md](deploy/windows/README.md)**, or download the release zip.
+> Start with **[deploy/windows/README.md](deploy/windows/README.md)** (Windows) or
+> **[deploy/linux/README.md](deploy/linux/README.md)** (Ubuntu 24.04), or download a release.
 > At `--max-context` 262,144 or less the engine is byte-identical to upstream, so everything
 > below still applies. Changes are listed at the end of [NOTICE](NOTICE). Fork releases use
 > their own semantic versions starting at `v1.0.0` (based on this repository's `v1.1.0`).

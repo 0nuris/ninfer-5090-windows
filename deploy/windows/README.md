@@ -3,7 +3,8 @@
 Qwen3.8-27B on one RTX 5090 with a **524,288-token context**, served through OpenAI- and
 Anthropic-compatible HTTP APIs. This is [NInfer](https://github.com/Neroued/ninfer)'s native
 Windows port with two additions: YaRN context extension beyond the model's native 262,144 tokens,
-and a fix that lets Windows pin the engine's host cache reliably.
+and a fix that lets Windows pin the engine's host cache reliably. For Ubuntu, see
+[`deploy/linux`](../linux/README.md).
 
 ## Requirements
 
